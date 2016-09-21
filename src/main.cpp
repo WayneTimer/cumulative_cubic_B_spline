@@ -28,8 +28,8 @@ Eigen::Matrix4d B;
 vector<Sophus::SE3d> SE3_vec;
 vector<double> pose_ts_vec;
 vector<double> imu_ts_vec;
-FILE *file;
-FILE *debug_file;  // show the gt 10HZ pose
+FILE *file,*vel_file,*acc_file;
+FILE *debug_file,*debug_vel_file,*debug_acc_file;  // show the gt 10HZ pose
 double deltaT = 0.1;  // 10HZ img (100ms)
 
 void imu_callback(const sensor_msgs::ImuConstPtr& msg)
@@ -62,7 +62,11 @@ void init()
     pose_ts_vec.clear();
     imu_ts_vec.clear();
     file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_pose.txt","w");
+    vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_vel.txt","w");  // only omega
+    acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_acc.txt","w");
     debug_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_gt_pose.txt","w");
+    debug_vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_gt_vel.txt","w");  // only omega
+    debug_acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_gt_acc.txt","w");
     // --------
     B.setZero();
 
@@ -127,6 +131,15 @@ void process()
         imu = imu_buffer.front();
         imu_buffer.pop();
         imu_ts_vec.push_back((imu.header.stamp - start_time_stamp).toSec());
+
+        fprintf(debug_vel_file,"%lf %lf %lf %lf\n",
+                                (imu.header.stamp - start_time_stamp).toSec(),
+                                imu.angular_velocity.x,imu.angular_velocity.y,imu.angular_velocity.z
+               );
+        fprintf(debug_acc_file,"%lf %lf %lf %lf\n",
+                                (imu.header.stamp - start_time_stamp).toSec(),
+                                imu.linear_acceleration.x,imu.linear_acceleration.y,imu.linear_acceleration.z
+               );
     }
     //---------------------
     double diff = 0.001;  // 1ms intepolate
@@ -166,36 +179,64 @@ void process()
                           theta(0),theta(1),theta(2)
                    );
 
-/*
-            // get omega
-            vector<Sophus::SE3d> A,dA;
+
+            // get omega,acc
+            vector<Eigen::Matrix4d> A,dA,ddA;
             A.resize(4);
             dA.resize(4);
+            ddA.resize(4);
             for (int j=1;j<=3;j++)  // 0 to 2 ? 1 to 3 ?  :  j= 1 to 3, diff with <Spline-fusion>
             {
+                // calc A
                 Eigen::VectorXd upsilon_omega = Sophus::SE3d::log(SE3_vec[i+j-2].inverse() * SE3_vec[i+j-1]);
                 double B_select = T2(j);
-                A[j] = Sophus::SE3d::exp(B_select * upsilon_omega);
+                A[j] = (Sophus::SE3d::exp(B_select * upsilon_omega)).matrix();
 
-                Eigen::Vector4d dT1(0.0,1.0,2*u,3*u*u);
+                // calc dA
+                Eigen::Vector4d dT1(0.0,1.0,2.0*u,3.0*u*u);
                 Eigen::Vector4d dT2;
                 dT2 = 1.0/deltaT * B * dT1;
                 double dB_select = dT2(j);
-                dA[j] = A[j] * Sophus::SE3d::exp(upsilon_omega * dB_select);  // /omega * dB  -->  exp(/omega * dB) ?  Paper: Spline-Fusion
-            }
-            Sophus::SE3d dSE;
-            Eigen::Matrix4d part1,part2,part3,all;  // ???
-            part1 = (dA[1]*A[2]*A[3]).matrix();
-            part2 = (A[1]*dA[2]*A[3]).matrix();
-            part3 = (A[1]*A[2]*dA[3]).matrix();
-            all = part1 + part2 + part3;
-            Sophus::SE3d all_SE(all.block<3,3>(0,0),all.block<3,1>(0,3));
-            dSE = RTl0 * all_SE;
+                // \omega 4x4 = /omega 6x1
+                //  [ w^ p]        [ p ]
+                //  [ 0  1]        [ w ]
+                //
+                // while multiply a scalar, the same. (Ignore the last .at(3,3) 1)
+                dA[j] = A[j] * (Sophus::SE3d::exp(upsilon_omega)).matrix() * dB_select;
 
-            Eigen::Matrix3d spline_skew_omega = R.transpose() * dSE.rotationMatrix();
-            cout << spline_skew_omega << endl;
-            cout << "------------" << endl;
-*/
+                // calc ddA
+                Eigen::Vector4d ddT1(0.0,0.0,2.0,6.0*u);
+                Eigen::Vector4d ddT2;
+                ddT2 = 1.0/(deltaT*deltaT) * B * ddT1;
+                double ddB_select = ddT2(j);
+                ddA[j] = dA[j] * (Sophus::SE3d::exp(upsilon_omega)).matrix() * dB_select + A[j] * (Sophus::SE3d::exp(upsilon_omega)).matrix() * ddB_select;
+            }
+
+            Eigen::Matrix4d all;
+            // get B-spline's omega
+            Eigen::Matrix4d dSE;
+            all = dA[1]*A[2]*A[3] + A[1]*dA[2]*A[3] + A[1]*A[2]*dA[3];
+            dSE = RTl0.matrix() * all;
+
+            Eigen::Matrix3d skew_R = ret.rotationMatrix().transpose() * dSE.block<3,3>(0,0);
+            double wx,wy,wz;  // ? simple mean
+            wx = (-skew_R(1,2) + skew_R(2,1)) / 2.0;
+            wy = (-skew_R(2,0) + skew_R(0,2)) / 2.0;
+            wz = (-skew_R(0,1) + skew_R(1,0)) / 2.0;
+            fprintf(vel_file,"%lf %lf %lf %lf\n",
+                              ts,wx,wy,wz
+                   );
+
+            // get B-spline's acc
+            Eigen::Matrix4d ddSE;
+            all =   ddA[1]*A[2]*A[3] + A[1]*ddA[2]*A[3] + A[1]*A[2]*ddA[3]
+                  + 2.0*dA[1]*dA[2]*A[3] + 2.0*dA[1]*A[2]*dA[3] + 2.0*A[1]*dA[2]*dA[3];
+            ddSE = RTl0.matrix() * all;
+
+            Eigen::Vector3d spline_acc = ret.rotationMatrix().transpose() * (ddSE.block<3,1>(0,3)/ddSE(3,3) + Eigen::Vector3d(0,0,9.805));  // ? gravity not accurate
+            fprintf(acc_file,"%lf %lf %lf %lf\n",
+                              ts,spline_acc(0),spline_acc(1),spline_acc(2)
+                   );
         }
     }
 }
@@ -205,7 +246,7 @@ int main(int argc, char **argv)
     ros::init(argc,argv,"Dense_Tracking");
     ros::NodeHandle nh("~");
 
-    ros::Subscriber sub_imu = nh.subscribe("/imu0",1000,imu_callback);  // 200HZ (5ms)
+    ros::Subscriber sub_imu = nh.subscribe("/imu0",10000,imu_callback);  // 200HZ (5ms)
     ros::Subscriber sub_pose = nh.subscribe("/self_calibration_estimator/pose",1000,pose_callback);  // 10HZ (100ms)
 
     init();
@@ -216,7 +257,11 @@ int main(int argc, char **argv)
     mtx.lock();
     process();
     fclose(file);
+    fclose(vel_file);
+    fclose(acc_file);
     fclose(debug_file);
+    fclose(debug_vel_file);
+    fclose(debug_acc_file);
     mtx.unlock();
     ros::shutdown();
 
