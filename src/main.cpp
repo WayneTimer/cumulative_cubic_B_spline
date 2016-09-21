@@ -5,6 +5,8 @@ namespace backward
 backward::SignalHandling sh;
 } // namespace backward
 
+//#define ODOM
+
 #include <cstdio>
 #include <string>
 #include <queue>
@@ -16,6 +18,10 @@ backward::SignalHandling sh;
 #include <geometry_msgs/PoseStamped.h>
 #include <sophus/se3.hpp>
 #include <boost/thread.hpp>
+
+#ifdef ODOM
+    #include <nav_msgs/Odometry.h>
+#endif
 
 #include "utils.h"
 
@@ -45,6 +51,19 @@ void pose_callback(const geometry_msgs::PoseStampedConstPtr& msg)
     pose_buffer.push(*msg);
     mtx.unlock();
 }
+
+#ifdef ODOM
+void odom_callback(const nav_msgs::OdometryConstPtr& msg)
+{
+    geometry_msgs::PoseStamped pose_msg;
+    pose_msg.header = msg->header;
+    pose_msg.pose = msg->pose.pose;
+
+    mtx.lock();
+    pose_buffer.push(pose_msg);
+    mtx.unlock();
+}
+#endif
 
 void spin_thread()
 {
@@ -246,8 +265,11 @@ int main(int argc, char **argv)
     ros::init(argc,argv,"Dense_Tracking");
     ros::NodeHandle nh("~");
 
-    ros::Subscriber sub_imu = nh.subscribe("/imu0",10000,imu_callback);  // 200HZ (5ms)
+    ros::Subscriber sub_imu = nh.subscribe("/imu0",1000,imu_callback);  // 200HZ (5ms)
     ros::Subscriber sub_pose = nh.subscribe("/self_calibration_estimator/pose",1000,pose_callback);  // 10HZ (100ms)
+#ifdef ODOM
+    ros::Subscriber sub_odom = nh.subscribe("/self_calibration_estimator/odometry",1000,odom_callback);
+#endif
 
     init();
 
