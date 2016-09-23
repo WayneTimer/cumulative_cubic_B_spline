@@ -5,7 +5,7 @@ namespace backward
 backward::SignalHandling sh;
 } // namespace backward
 
-//#define ODOM
+#define M100
 
 #include <cstdio>
 #include <string>
@@ -15,28 +15,33 @@ backward::SignalHandling sh;
 #include <ros/ros.h>
 #include <ros/package.h>
 #include <sensor_msgs/Imu.h>
-#include <geometry_msgs/PoseStamped.h>
 #include <sophus/se3.hpp>
 #include <boost/thread.hpp>
-
-#ifdef ODOM
-    #include <nav_msgs/Odometry.h>
-#endif
+#include <nav_msgs/Odometry.h>
+#include <geometry_msgs/PoseStamped.h>
 
 #include "utils.h"
 
 using namespace std;
 
 queue<sensor_msgs::Imu> imu_buffer;
-queue<geometry_msgs::PoseStamped> pose_buffer;
+queue<nav_msgs::Odometry> odom_buffer;
 boost::mutex mtx;
 Eigen::Matrix4d B;
 vector<Sophus::SE3d> SE3_vec;
 vector<double> pose_ts_vec;
 vector<double> imu_ts_vec;
-FILE *file,*vel_file,*acc_file;
-FILE *debug_file,*debug_vel_file,*debug_acc_file;  // show the gt 10HZ pose
-double deltaT = 0.1;  // 10HZ img (100ms)
+FILE *file;  // B-spline: ts p \theta
+FILE *vel_file;  // B-spline': ts vel \omega
+FILE *acc_file;  // B-spline'': ts acc
+FILE *debug_file;  // VINS: ts p \theta vel
+FILE *debug_imu_file;  // IMU: ts acc \omega
+#ifdef M100
+    double deltaT = 0.067;  // 15HZ pose (66.67ms)
+#else
+    double deltaT = 0.1;  // 10HZ img (100ms)
+#endif
+
 
 void imu_callback(const sensor_msgs::ImuConstPtr& msg)
 {
@@ -47,23 +52,21 @@ void imu_callback(const sensor_msgs::ImuConstPtr& msg)
 
 void pose_callback(const geometry_msgs::PoseStampedConstPtr& msg)
 {
+    nav_msgs::Odometry odom_msg;
+    odom_msg.header = msg->header;
+    odom_msg.pose.pose = msg->pose;
+
     mtx.lock();
-    pose_buffer.push(*msg);
+    odom_buffer.push(odom_msg);
     mtx.unlock();
 }
 
-#ifdef ODOM
 void odom_callback(const nav_msgs::OdometryConstPtr& msg)
 {
-    geometry_msgs::PoseStamped pose_msg;
-    pose_msg.header = msg->header;
-    pose_msg.pose = msg->pose.pose;
-
     mtx.lock();
-    pose_buffer.push(pose_msg);
+    odom_buffer.push(*msg);
     mtx.unlock();
 }
-#endif
 
 void spin_thread()
 {
@@ -76,16 +79,15 @@ void spin_thread()
 void init()
 {
     while (!imu_buffer.empty()) imu_buffer.pop();
-    while (!pose_buffer.empty()) pose_buffer.empty();
+    while (!odom_buffer.empty()) odom_buffer.pop();
     SE3_vec.clear();
     pose_ts_vec.clear();
     imu_ts_vec.clear();
     file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_pose.txt","w");
-    vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_vel.txt","w");  // only omega
+    vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_vel.txt","w");
     acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_acc.txt","w");
     debug_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_gt_pose.txt","w");
-    debug_vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_gt_vel.txt","w");  // only omega
-    debug_acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_gt_acc.txt","w");
+    debug_imu_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_imu.txt","w");
     // --------
     B.setZero();
 
@@ -112,32 +114,39 @@ void init()
 // ensure there is enough msg
 void process()
 {
-    ros::Time start_time_stamp = pose_buffer.front().header.stamp;
-    while (!pose_buffer.empty())
+    ros::Time start_time_stamp = odom_buffer.front().header.stamp;
+    while (!odom_buffer.empty())
     {
-        geometry_msgs::PoseStamped pose;
-        pose = pose_buffer.front();
-        pose_buffer.pop();
-        pose_ts_vec.push_back((pose.header.stamp - start_time_stamp).toSec());
+        ros::Time odom_stamp;
+        geometry_msgs::Pose pose;
+        Eigen::Vector3d linear_vel;
+        odom_stamp = odom_buffer.front().header.stamp;
+        pose = odom_buffer.front().pose.pose;
+        linear_vel(0) = odom_buffer.front().twist.twist.linear.x;
+        linear_vel(1) = odom_buffer.front().twist.twist.linear.y;
+        linear_vel(2) = odom_buffer.front().twist.twist.linear.z;
+        pose_ts_vec.push_back((odom_stamp - start_time_stamp).toSec());
+        odom_buffer.pop();
 
         Eigen::Quaterniond q;
-        q.w() = pose.pose.orientation.w;
-        q.x() = pose.pose.orientation.x;
-        q.y() = pose.pose.orientation.y;
-        q.z() = pose.pose.orientation.z;
+        q.w() = pose.orientation.w;
+        q.x() = pose.orientation.x;
+        q.y() = pose.orientation.y;
+        q.z() = pose.orientation.z;
         Eigen::Vector3d p;
-        p(0) = pose.pose.position.x;
-        p(1) = pose.pose.position.y;
-        p(2) = pose.pose.position.z;
+        p(0) = pose.position.x;
+        p(1) = pose.position.y;
+        p(2) = pose.position.z;
         Sophus::SE3d RT(q.toRotationMatrix(),p);
         SE3_vec.push_back(RT);
 
         Eigen::Matrix3d tmp_R = q.toRotationMatrix();
         Eigen::Vector3d theta = R_to_ypr(tmp_R);
-        fprintf(debug_file,"%lf %lf %lf %lf %lf %lf %lf\n",
-                            (pose.header.stamp - start_time_stamp).toSec(),
+        fprintf(debug_file,"%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf\n",
+                            (odom_stamp - start_time_stamp).toSec(),
                             p(0),p(1),p(2),
-                            theta(0),theta(1),theta(2)
+                            theta(0),theta(1),theta(2),
+                            linear_vel(0),linear_vel(1),linear_vel(2)
                );
     }
     while (!imu_buffer.empty() && imu_buffer.front().header.stamp < start_time_stamp)
@@ -151,13 +160,10 @@ void process()
         imu_buffer.pop();
         imu_ts_vec.push_back((imu.header.stamp - start_time_stamp).toSec());
 
-        fprintf(debug_vel_file,"%lf %lf %lf %lf\n",
+        fprintf(debug_imu_file,"%lf %lf %lf %lf %lf %lf %lf\n",
                                 (imu.header.stamp - start_time_stamp).toSec(),
+                                imu.linear_acceleration.x,imu.linear_acceleration.y,imu.linear_acceleration.z,
                                 imu.angular_velocity.x,imu.angular_velocity.y,imu.angular_velocity.z
-               );
-        fprintf(debug_acc_file,"%lf %lf %lf %lf\n",
-                                (imu.header.stamp - start_time_stamp).toSec(),
-                                imu.linear_acceleration.x,imu.linear_acceleration.y,imu.linear_acceleration.z
                );
     }
     //---------------------
@@ -198,7 +204,6 @@ void process()
                           theta(0),theta(1),theta(2)
                    );
 
-
             // get omega,acc
             vector<Eigen::Matrix4d> A,dA,ddA;
             A.resize(4);
@@ -235,6 +240,7 @@ void process()
             // get B-spline's omega
             Eigen::Matrix4d dSE;
             all = dA[1]*A[2]*A[3] + A[1]*dA[2]*A[3] + A[1]*A[2]*dA[3];
+
             dSE = RTl0.matrix() * all;
 
             Eigen::Matrix3d skew_R = ret.rotationMatrix().transpose() * dSE.block<3,3>(0,0);
@@ -242,8 +248,12 @@ void process()
             wx = (-skew_R(1,2) + skew_R(2,1)) / 2.0;
             wy = (-skew_R(2,0) + skew_R(0,2)) / 2.0;
             wz = (-skew_R(0,1) + skew_R(1,0)) / 2.0;
-            fprintf(vel_file,"%lf %lf %lf %lf\n",
-                              ts,wx,wy,wz
+            Eigen::Vector3d linear_vel = dSE.block<3,1>(0,3)/dSE(3,3);  // ?  should /dSE(3,3) ?   world frame velocity
+
+            fprintf(vel_file,"%lf %lf %lf %lf %lf %lf %lf\n",
+                              ts,
+                              linear_vel(0),linear_vel(1),linear_vel(2),
+                              wx,wy,wz
                    );
 
             // get B-spline's acc
@@ -253,6 +263,7 @@ void process()
             ddSE = RTl0.matrix() * all;
 
             Eigen::Vector3d spline_acc = ret.rotationMatrix().transpose() * (ddSE.block<3,1>(0,3)/ddSE(3,3) + Eigen::Vector3d(0,0,9.805));  // ? gravity not accurate
+
             fprintf(acc_file,"%lf %lf %lf %lf\n",
                               ts,spline_acc(0),spline_acc(1),spline_acc(2)
                    );
@@ -265,10 +276,12 @@ int main(int argc, char **argv)
     ros::init(argc,argv,"Dense_Tracking");
     ros::NodeHandle nh("~");
 
-    ros::Subscriber sub_imu = nh.subscribe("/imu0",1000,imu_callback);  // 200HZ (5ms)
     ros::Subscriber sub_pose = nh.subscribe("/self_calibration_estimator/pose",1000,pose_callback);  // 10HZ (100ms)
-#ifdef ODOM
+#ifdef M100
+    ros::Subscriber sub_imu = nh.subscribe("/djiros/imu",1000,imu_callback);  // 100HZ (10ms)
     ros::Subscriber sub_odom = nh.subscribe("/self_calibration_estimator/odometry",1000,odom_callback);
+#else
+    ros::Subscriber sub_imu = nh.subscribe("/imu0",1000,imu_callback);  // 200HZ (5ms)
 #endif
 
     init();
@@ -282,8 +295,7 @@ int main(int argc, char **argv)
     fclose(vel_file);
     fclose(acc_file);
     fclose(debug_file);
-    fclose(debug_vel_file);
-    fclose(debug_acc_file);
+    fclose(debug_imu_file);
     mtx.unlock();
     ros::shutdown();
 
