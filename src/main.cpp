@@ -32,7 +32,8 @@ vector<Sophus::SE3d> SE3_vec;
 vector<double> pose_ts_vec;
 vector<double> imu_ts_vec;
 FILE *file;  // B-spline: ts p \theta
-FILE *vel_file;  // B-spline': ts vel \omega
+FILE *omega_file;  // B-spline': ts \omega
+FILE *vel_file;  // B-spline': ts vel
 FILE *acc_file;  // B-spline'': ts acc
 FILE *debug_file;  // VINS: ts p \theta vel
 FILE *debug_imu_file;  // IMU: ts acc \omega
@@ -84,6 +85,7 @@ void init()
     pose_ts_vec.clear();
     imu_ts_vec.clear();
     file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_pose.txt","w");
+    omega_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_omega.txt","w");
     vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_vel.txt","w");
     acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_acc.txt","w");
     debug_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_gt_pose.txt","w");
@@ -250,10 +252,13 @@ void process()
             wz = (-skew_R(0,1) + skew_R(1,0)) / 2.0;
             Eigen::Vector3d linear_vel = dSE.block<3,1>(0,3)/dSE(3,3);  // ?  should /dSE(3,3) ?   world frame velocity
 
-            fprintf(vel_file,"%lf %lf %lf %lf %lf %lf %lf\n",
+            fprintf(omega_file,"%lf %lf %lf %lf\n",
                               ts,
-                              linear_vel(0),linear_vel(1),linear_vel(2),
                               wx,wy,wz
+                   );
+            fprintf(vel_file,"%lf %lf %lf %lf\n",
+                              ts,
+                              linear_vel(0),linear_vel(1),linear_vel(2)
                    );
 
             // get B-spline's acc
@@ -292,6 +297,7 @@ int main(int argc, char **argv)
     mtx.lock();
     process();
     fclose(file);
+    fclose(omega_file);
     fclose(vel_file);
     fclose(acc_file);
     fclose(debug_file);

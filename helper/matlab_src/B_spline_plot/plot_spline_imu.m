@@ -88,7 +88,6 @@ data = load(spline_vel_file);
 
 stamp = data(:,1);
 vel = data(:,2:4);
-omega = data(:,5:7);
 
 subplot(n,m,7);
 plot(stamp,vel(:,1),'r');
@@ -96,6 +95,15 @@ subplot(n,m,8);
 plot(stamp,vel(:,2),'r');
 subplot(n,m,9);
 plot(stamp,vel(:,3),'r');
+
+
+%% plot B-spline \omega
+spline_omega_file = '/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_omega.txt';
+
+data = load(spline_omega_file);
+
+stamp = data(:,1);
+omega = data(:,2:4);
 
 subplot(n,m,10);
 plot(stamp,omega(:,1),'r');
