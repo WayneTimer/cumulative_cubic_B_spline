@@ -1,9 +1,15 @@
 # cumulative_cubic_B_spline
 
-1. Cumulative cubic B-spline fitting done, correct.
-2. Use <Spline-fusion>'s first derivates of SE(3) to get angular velocity, correct.
-3. second derivates to get acc, not pretty correct.
+1. Cumulative cubic B-spline fitting done.
 
-TODO:
-1. Add (RIC,TIC).
-2. Try to use Ceres AD to get the first derivates and compare with /omega from IMU.
+TODO: (Ceres AD)
+1. Ceres:
+    QT VINS + IMU
+2. Ceres:  [Keyframe-based]
+    dense VIO + IMU
+3. Ceres:  [Keyframe-based]
+    dense VO (IMU initial guess) + IMU
+4. Ceres:  [Keyframe-based]
+    dense blur VO (IMU initial guess) + IMU
+5. Ceres:  [Model-based]
+    Model-based instead of above three.
