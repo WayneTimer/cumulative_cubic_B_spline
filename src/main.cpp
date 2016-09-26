@@ -5,7 +5,7 @@ namespace backward
 backward::SignalHandling sh;
 } // namespace backward
 
-#define M100
+//#define M100
 
 #include <cstdio>
 #include <string>
@@ -216,26 +216,31 @@ void process()
                 // calc A
                 Eigen::VectorXd upsilon_omega = Sophus::SE3d::log(SE3_vec[i+j-2].inverse() * SE3_vec[i+j-1]);
                 double B_select = T2(j);
+                // \omega 4x4 = /omega 6x1
+                //  [ w^ v]        [ v ]
+                //  [ 0  0]        [ w ]
+                //
+                // while multiply a scalar, the same. (Ignore the last .at(3,3) 1)
                 A[j] = (Sophus::SE3d::exp(B_select * upsilon_omega)).matrix();
+
+                Eigen::Matrix4d omega_mat;  // 4x4 se(3)
+                omega_mat.setZero();
+                omega_mat.block<3,3>(0,0) = skew(upsilon_omega.tail<3>());
+                omega_mat.block<3,1>(0,3) = upsilon_omega.head<3>();
 
                 // calc dA
                 Eigen::Vector4d dT1(0.0,1.0,2.0*u,3.0*u*u);
                 Eigen::Vector4d dT2;
                 dT2 = 1.0/deltaT * B * dT1;
                 double dB_select = dT2(j);
-                // \omega 4x4 = /omega 6x1
-                //  [ w^ p]        [ p ]
-                //  [ 0  1]        [ w ]
-                //
-                // while multiply a scalar, the same. (Ignore the last .at(3,3) 1)
-                dA[j] = A[j] * (Sophus::SE3d::exp(upsilon_omega)).matrix() * dB_select;
+                dA[j] = A[j] * omega_mat * dB_select;
 
                 // calc ddA
                 Eigen::Vector4d ddT1(0.0,0.0,2.0,6.0*u);
                 Eigen::Vector4d ddT2;
                 ddT2 = 1.0/(deltaT*deltaT) * B * ddT1;
                 double ddB_select = ddT2(j);
-                ddA[j] = dA[j] * (Sophus::SE3d::exp(upsilon_omega)).matrix() * dB_select + A[j] * (Sophus::SE3d::exp(upsilon_omega)).matrix() * ddB_select;
+                ddA[j] = dA[j] * omega_mat * dB_select + A[j] * omega_mat * ddB_select;
             }
 
             Eigen::Matrix4d all;
@@ -250,7 +255,7 @@ void process()
             wx = (-skew_R(1,2) + skew_R(2,1)) / 2.0;
             wy = (-skew_R(2,0) + skew_R(0,2)) / 2.0;
             wz = (-skew_R(0,1) + skew_R(1,0)) / 2.0;
-            Eigen::Vector3d linear_vel = dSE.block<3,1>(0,3)/dSE(3,3);  // ?  should /dSE(3,3) ?   world frame velocity
+            Eigen::Vector3d linear_vel = dSE.block<3,1>(0,3);  // world frame velocity
 
             fprintf(omega_file,"%lf %lf %lf %lf\n",
                               ts,
@@ -267,7 +272,7 @@ void process()
                   + 2.0*dA[1]*dA[2]*A[3] + 2.0*dA[1]*A[2]*dA[3] + 2.0*A[1]*dA[2]*dA[3];
             ddSE = RTl0.matrix() * all;
 
-            Eigen::Vector3d spline_acc = ret.rotationMatrix().transpose() * (ddSE.block<3,1>(0,3)/ddSE(3,3) + Eigen::Vector3d(0,0,9.805));  // ? gravity not accurate
+            Eigen::Vector3d spline_acc = ret.rotationMatrix().transpose() * (ddSE.block<3,1>(0,3) + Eigen::Vector3d(0,0,9.805));  // ? gravity not accurate
 
             fprintf(acc_file,"%lf %lf %lf %lf\n",
                               ts,spline_acc(0),spline_acc(1),spline_acc(2)
