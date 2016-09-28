@@ -41,22 +41,3 @@ Eigen::Matrix3d ypr_to_R(const Eigen::Vector3d& theta)
 
     return R;
 }
-
-Eigen::Matrix3d skew(const Eigen::Vector3d& A)
-{
-    Eigen::Matrix3d ret;
-
-    ret(0,0) = 0.0;
-    ret(0,1) = -A(2);
-    ret(0,2) = A(1);
-
-    ret(1,0) = A(2);
-    ret(1,1) = 0.0;
-    ret(1,2) = -A(0);
-
-    ret(2,0) = -A(1);
-    ret(2,1) = A(0);
-    ret(2,2) = 0.0;
-
-    return ret;
-}

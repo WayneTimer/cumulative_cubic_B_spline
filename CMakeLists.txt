@@ -25,14 +25,17 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
 )
 
+find_package(Ceres REQUIRED)
+
 catkin_package()
 
 include_directories(
   ${catkin_INCLUDE_DIRS}
   /usr/include/eigen3/  # a temp solution to support <unsupported/Eigen> (they has "include <Eigen/...>" but not "<eigen3/Eigen/...>")
   ${PROJECT_SOURCE_DIR}/include/thirdparty/
+  ${CERES_INCLUDE_DIRS}
 )
 
-add_executable(cumulative_cubic_B_spline src/main.cpp src/utils.cpp)
-target_link_libraries(cumulative_cubic_B_spline ${catkin_LIBRARIES} dw)
+add_executable(cumulative_cubic_B_spline src/main.cpp src/utils.cpp src/ceres_solve.cpp)
+target_link_libraries(cumulative_cubic_B_spline ${catkin_LIBRARIES} ${CERES_LIBRARIES} dw)
 add_dependencies(cumulative_cubic_B_spline cumulative_cubic_B_spline_generate_messages_cpp)
