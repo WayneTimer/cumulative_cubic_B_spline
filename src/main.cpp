@@ -286,7 +286,7 @@ void process()
 
 int main(int argc, char **argv)
 {
-    ros::init(argc,argv,"Dense_Tracking");
+    ros::init(argc,argv,"cumulative_cubic_B_spline");
     ros::NodeHandle nh("~");
 
     ros::Subscriber sub_pose = nh.subscribe("/self_calibration_estimator/pose",1000,pose_callback);  // 10HZ (100ms)
