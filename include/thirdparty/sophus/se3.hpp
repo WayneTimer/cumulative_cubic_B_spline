@@ -421,8 +421,8 @@ public:
     } else {
       Scalar theta_sq = theta*theta;
       V = (Matrix<Scalar,3,3>::Identity()
-           + (static_cast<Scalar>(1)-std::cos(theta))/(theta_sq)*Omega
-           + (theta-std::sin(theta))/(theta_sq*theta)*Omega_sq);
+           + (static_cast<Scalar>(1)-ceres::cos(theta))/(theta_sq)*Omega
+           + (theta-ceres::sin(theta))/(theta_sq*theta)*Omega_sq);
     }
     return SE3Group<Scalar>(so3,V*a.template head<3>());
   }
@@ -563,7 +563,7 @@ public:
     upsilon_omega.template tail<3>()
         = SO3Group<Scalar>::logAndTheta(se3.so3(), &theta);
 
-    if (std::abs(theta)<SophusConstants<Scalar>::epsilon()) {
+    if (ceres::abs(theta)<SophusConstants<Scalar>::epsilon()) {
       const Matrix<Scalar,3,3> & Omega
           = SO3Group<Scalar>::hat(upsilon_omega.template tail<3>());
       const Matrix<Scalar,3,3> & V_inv =

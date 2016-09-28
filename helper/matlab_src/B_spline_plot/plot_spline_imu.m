@@ -160,3 +160,71 @@ subplot(n,m,14);
 plot(stamp,acc(:,2),'r');
 subplot(n,m,15);
 plot(stamp,acc(:,3),'r');
+
+%% === plot solved B-spline's pose ===
+solve_pose_file = '/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_pose.txt';
+
+data = load(solve_pose_file);
+
+stamp = data(:,1);
+p = data(:,2:4);
+theta = data(:,5:7);
+
+subplot(n,m,1);
+plot(stamp,p(:,1),'g');
+subplot(n,m,2);
+plot(stamp,p(:,2),'g');
+subplot(n,m,3);
+plot(stamp,p(:,3),'g');
+
+subplot(n,m,4);
+plot(stamp,theta(:,1),'g');
+subplot(n,m,5);
+plot(stamp,theta(:,2),'g');
+subplot(n,m,6);
+plot(stamp,theta(:,3),'g');
+
+%% === plot B-spline first order derivative ===
+solve_vel_file = '/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_vel.txt';
+
+data = load(solve_vel_file);
+
+stamp = data(:,1);
+vel = data(:,2:4);
+
+subplot(n,m,7);
+plot(stamp,vel(:,1),'g');
+subplot(n,m,8);
+plot(stamp,vel(:,2),'g');
+subplot(n,m,9);
+plot(stamp,vel(:,3),'g');
+
+%% === plot B-spline \omega ===
+solve_omega_file = '/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_omega.txt';
+
+data = load(solve_omega_file);
+
+stamp = data(:,1);
+omega = data(:,2:4);
+
+subplot(n,m,10);
+plot(stamp,omega(:,1),'g');
+subplot(n,m,11);
+plot(stamp,omega(:,2),'g');
+subplot(n,m,12);
+plot(stamp,omega(:,3),'g');
+
+%% === plot solved B-spline's acc ===
+solve_acc_file = '/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_acc.txt';
+
+data = load(solve_acc_file);
+
+stamp = data(:,1);
+acc = data(:,2:4);
+
+subplot(n,m,13);
+plot(stamp,acc(:,1),'g');
+subplot(n,m,14);
+plot(stamp,acc(:,2),'g');
+subplot(n,m,15);
+plot(stamp,acc(:,3),'g');

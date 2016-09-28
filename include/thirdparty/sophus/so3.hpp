@@ -343,7 +343,7 @@ public:
   const SO3Group<Scalar> expAndTheta(const Tangent & omega,
                                      Scalar * theta) {
     const Scalar theta_sq = omega.squaredNorm();
-    *theta = std::sqrt(theta_sq);
+    *theta = ceres::sqrt(theta_sq);
     const Scalar half_theta = static_cast<Scalar>(0.5)*(*theta);
 
     Scalar imag_factor;
@@ -357,9 +357,9 @@ public:
                     - static_cast<Scalar>(0.5)*theta_sq +
                     static_cast<Scalar>(1.0/384.0)*theta_po4;
     } else {
-      const Scalar sin_half_theta = std::sin(half_theta);
+      const Scalar sin_half_theta = ceres::sin(half_theta);
       imag_factor = sin_half_theta/(*theta);
-      real_factor = std::cos(half_theta);
+      real_factor = ceres::cos(half_theta);
     }
 
     return SO3Group<Scalar>(Quaternion<Scalar>(real_factor,
@@ -492,7 +492,7 @@ public:
                             Scalar * theta) {
     const Scalar squared_n
         = other.unit_quaternion().vec().squaredNorm();
-    const Scalar n = std::sqrt(squared_n);
+    const Scalar n = ceres::sqrt(squared_n);
     const Scalar w = other.unit_quaternion().w();
 
     Scalar two_atan_nbyw_by_n;
@@ -507,14 +507,14 @@ public:
     if (n < SophusConstants<Scalar>::epsilon()) {
       // If quaternion is normalized and n=0, then w should be 1;
       // w=0 should never happen here!
-      if (std::abs(w) < SophusConstants<Scalar>::epsilon()) {
+      if (ceres::abs(w) < SophusConstants<Scalar>::epsilon()) {
         throw SophusException("Quaternion is not normalized!");
       }
       const Scalar squared_w = w*w;
       two_atan_nbyw_by_n = static_cast<Scalar>(2) / w
                            - static_cast<Scalar>(2)*(squared_n)/(w*squared_w);
     } else {
-      if (std::abs(w)<SophusConstants<Scalar>::epsilon()) {
+      if (ceres::abs(w)<SophusConstants<Scalar>::epsilon()) {
         if (w > static_cast<Scalar>(0)) {
           two_atan_nbyw_by_n = M_PI/n;
         } else {

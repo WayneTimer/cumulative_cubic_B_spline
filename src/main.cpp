@@ -21,6 +21,7 @@ backward::SignalHandling sh;
 #include <geometry_msgs/PoseStamped.h>
 
 #include "utils.h"
+#include "ceres_solve.h"
 
 using namespace std;
 
@@ -309,6 +310,9 @@ int main(int argc, char **argv)
     fclose(acc_file);
     fclose(debug_file);
     fclose(debug_imu_file);
+
+    ceres_process();
+
     mtx.unlock();
     ros::shutdown();
 

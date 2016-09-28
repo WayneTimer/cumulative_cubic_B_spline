@@ -6,11 +6,12 @@
 
 #include "ceres_extensions.h"
 #include "utils.h"
+#include "ceres_solve.h"
 
 using namespace std;
 
-#define ACC_WEIGHT 1.0
-#define OMEGA_WEIGHT 1.0
+#define ACC_WEIGHT 0.2
+#define OMEGA_WEIGHT 0.5
 
 extern vector<Sophus::SE3d> SE3_vec;
 extern vector<double> pose_ts_vec;
@@ -169,9 +170,9 @@ struct acc_functor
 
 
         // ---- get residual ----
-        residual[0] = spline_acc(0,0) - acc[0];
-        residual[1] = spline_acc(1,0) - acc[1];
-        residual[2] = spline_acc(2,0) - acc[2];
+        residual[0] = (spline_acc(0,0) - acc[0]) * T(ACC_WEIGHT);
+        residual[1] = (spline_acc(1,0) - acc[1]) * T(ACC_WEIGHT);
+        residual[2] = (spline_acc(2,0) - acc[2]) * T(ACC_WEIGHT);
 
         return true;
     }
@@ -303,9 +304,9 @@ struct omega_functor
 
 
         // ---- get residual ----
-        residual[0] = wx - omega[0];
-        residual[1] = wy - omega[1];
-        residual[2] = wz - omega[2];
+        residual[0] = (wx - omega[0]) * T(OMEGA_WEIGHT);
+        residual[1] = (wy - omega[1]) * T(OMEGA_WEIGHT);
+        residual[2] = (wz - omega[2]) * T(OMEGA_WEIGHT);
 
         return true;
     }
@@ -325,15 +326,15 @@ void ceres_solve(int head)
     ceres::LocalParameterization *local_parameterization = new ceres_ext::EigenQuaternionParameterization();
 
     // add vio constraint
-    for (int i=0;i<=4;i++)
+    for (int i=0;i<4;i++)
     {
-        Eigen::Vector3d T = new_SE3_vec[i].translation();
-        Eigen::Quaterniond quat(new_SE3_vec[i].rotationMatrix());
+        Eigen::Vector3d T = new_SE3_vec[head+i].translation();
+        Eigen::Quaterniond quat(new_SE3_vec[head+i].rotationMatrix());
 
         for (int j=0;j<3;j++)
         {
-            p0[i][j] = T[0];
-            p[i][j] = T[0];
+            p0[i][j] = T[j];
+            p[i][j] = T[j];
         }
         q0[i][0] = quat.x(), q0[i][1] = quat.y(), q0[i][2] = quat.z(), q0[i][3] = quat.w();  // q = {x,y,z,w}
         q[i][0] = quat.x(), q[i][1] = quat.y(), q[i][2] = quat.z(), q[i][3] = quat.w();
@@ -404,6 +405,7 @@ void ceres_solve(int head)
     // solving
     ceres::Solver::Options options;
     options.minimizer_progress_to_stdout = true;
+    options.line_search_sufficient_function_decrease = 1e-3;
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
     cout << summary.BriefReport() << endl;
@@ -420,8 +422,153 @@ void ceres_solve(int head)
         quat.z() = q[i][2];
         quat.w() = q[i][3];
 
-        new_SE3_vec[i] = Sophus::SE3d(quat.toRotationMatrix(),T);
+        new_SE3_vec[head+i] = Sophus::SE3d(quat.toRotationMatrix(),T);
     }
+}
+
+void output_result()
+{
+    FILE *solve_file;  // Solved B-spline: ts p \theta
+    FILE *solve_omega_file;  // Solved B-spline': ts \omega
+    FILE *solve_vel_file;  // Solved B-spline': ts vel
+    FILE *solve_acc_file;  // Solved B-spline'': ts acc
+
+    solve_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_pose.txt","w");
+    solve_omega_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_omega.txt","w");
+    solve_vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_vel.txt","w");
+    solve_acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_acc.txt","w");
+
+    // ------------
+    Eigen::Matrix4d B;
+    B.setZero();
+
+    B(0,0) = 6.0;
+
+    B(1,0) = 5.0;
+    B(1,1) = 3.0;
+    B(1,2) = -3.0;
+    B(1,3) = 1.0;
+
+    B(2,0) = 1.0;
+    B(2,1) = 3.0;
+    B(2,2) = 3.0;
+    B(2,3) = -2.0;
+
+    B(3,3) = 1.0;
+
+    Eigen::Matrix4d tmp_B;
+    tmp_B = 1.0/6.0 * B;
+    B = tmp_B;
+
+    //---------------------
+    double diff = 0.001;  // 1ms intepolate
+    int l;
+    l = new_SE3_vec.size();
+    for (int i=1;i<l-2;i++)
+    {
+        Sophus::SE3d RTl0 = new_SE3_vec[i-1];
+        for (double ts=pose_ts_vec[i];ts<pose_ts_vec[i+1];ts+=diff)
+        {
+            double u = (ts-pose_ts_vec[i])/deltaT;
+            Eigen::Vector4d T1(1.0,u,u*u,u*u*u);
+            Eigen::Vector4d T2;
+            T2 = B*T1;
+
+            Eigen::Vector4d dT1(0.0,1.0,2.0*u,3.0*u*u);
+            Eigen::Vector4d dT2;
+            dT2 = 1.0/deltaT * B * dT1;
+
+            Eigen::Vector4d ddT1(0.0,0.0,2.0,6.0*u);
+            Eigen::Vector4d ddT2;
+            ddT2 = 1.0/(deltaT*deltaT) * B * ddT1;
+
+            vector<Eigen::Matrix4d> A,dA,ddA;
+            A.resize(4);
+            dA.resize(4);
+            ddA.resize(4);
+            for (int j=1;j<=3;j++)  // 0 to 2 ? 1 to 3 ?  :  j= 1 to 3, diff with <Spline-fusion>
+            {
+                Eigen::VectorXd upsilon_omega = Sophus::SE3d::log(new_SE3_vec[i+j-2].inverse() * new_SE3_vec[i+j-1]);
+                Eigen::Matrix4d omega_mat;  // 4x4 se(3)
+                omega_mat.setZero();
+                omega_mat.block<3,3>(0,0) = skew<double>(upsilon_omega.tail<3>());
+                omega_mat.block<3,1>(0,3) = upsilon_omega.head<3>();
+
+                // calc A
+                double B_select = T2(j);
+                // \omega 4x4 = /omega 6x1
+                //  [ w^ v]        [ v ]
+                //  [ 0  0]        [ w ]
+                //
+                // while multiply a scalar, the same. (Ignore the last .at(3,3) 1)
+                A[j] = (Sophus::SE3d::exp(B_select * upsilon_omega)).matrix();
+
+                // calc dA
+                double dB_select = dT2(j);
+                dA[j] = A[j] * omega_mat * dB_select;
+
+                // calc ddA
+                double ddB_select = ddT2(j);
+                ddA[j] = dA[j] * omega_mat * dB_select + A[j] * omega_mat * ddB_select;
+            }
+
+            Eigen::Matrix4d all;
+
+            // get B-spline's R,T
+            all = A[1] * A[2] * A[3];
+            Eigen::Matrix4d ret = RTl0.matrix() * all;
+
+            Eigen::Vector3d T,theta;
+            Eigen::Matrix3d R;
+            T = ret.block<3,1>(0,3);
+            R = ret.block<3,3>(0,0);
+            theta = R_to_ypr(R);
+            fprintf(solve_file,"%lf %lf %lf %lf %lf %lf %lf\n",
+                                ts,
+                                T(0),T(1),T(2),                                           
+                                theta(0),theta(1),theta(2)
+                   );
+
+            // get B-spline's omega
+            Eigen::Matrix4d dSE;
+            all = dA[1]*A[2]*A[3] + A[1]*dA[2]*A[3] + A[1]*A[2]*dA[3];
+
+            dSE = RTl0.matrix() * all;
+
+            Eigen::Matrix3d skew_R = R.transpose() * dSE.block<3,3>(0,0);
+            double wx,wy,wz;  // ? simple mean
+            wx = (-skew_R(1,2) + skew_R(2,1)) / 2.0;
+            wy = (-skew_R(2,0) + skew_R(0,2)) / 2.0;
+            wz = (-skew_R(0,1) + skew_R(1,0)) / 2.0;
+            Eigen::Vector3d linear_vel = dSE.block<3,1>(0,3);  // world frame velocity
+
+            fprintf(solve_omega_file,"%lf %lf %lf %lf\n",
+                                      ts,
+                                      wx,wy,wz
+                   );
+            fprintf(solve_vel_file,"%lf %lf %lf %lf\n",
+                                    ts,
+                                    linear_vel(0),linear_vel(1),linear_vel(2)
+                   );
+
+            // get B-spline's acc
+            Eigen::Matrix4d ddSE;
+            all =   ddA[1]*A[2]*A[3] + A[1]*ddA[2]*A[3] + A[1]*A[2]*ddA[3]
+                  + 2.0*dA[1]*dA[2]*A[3] + 2.0*dA[1]*A[2]*dA[3] + 2.0*A[1]*dA[2]*dA[3];
+            ddSE = RTl0.matrix() * all;
+
+            Eigen::Vector3d spline_acc = R.transpose() * (ddSE.block<3,1>(0,3) + Eigen::Vector3d(0,0,9.805));  // ? gravity not accurate
+
+            fprintf(solve_acc_file,"%lf %lf %lf %lf\n",
+                                    ts,spline_acc(0),spline_acc(1),spline_acc(2)
+                   );
+        }
+    }
+
+    fclose(solve_file);
+    fclose(solve_omega_file);
+    fclose(solve_vel_file);
+    fclose(solve_acc_file);
 }
 
 void ceres_process()
@@ -438,6 +585,7 @@ void ceres_process()
     {
         ceres_solve(i);
     }
+
     // ---- output to file ----
-    // TODO
+    output_result();
 }

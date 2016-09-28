@@ -28,6 +28,8 @@
 #include <Eigen/Eigen>
 #include <Eigen/Geometry>
 
+#include <ceres/ceres.h>
+
 namespace Sophus {
 using namespace Eigen;
 
