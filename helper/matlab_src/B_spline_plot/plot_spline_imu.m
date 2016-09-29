@@ -1,12 +1,14 @@
 %% declare
 
 %% plot  n x m  subplot
-% p:        x y z
-% \theta:   yaw pitch roll
-% vel:      x y z
-% \omega:   yaw pitch roll
-% acc:      x y z
-n = 5;
+% p:          x y z
+% \theta:     yaw pitch roll
+% vel:        x y z
+% \omega:     yaw pitch roll
+% acc:        x y z
+% acc_bias:   x y z
+% omega_bias: x y z
+n = 7;
 m = 3;
 scatter_size = 5;
 
@@ -228,3 +230,38 @@ subplot(n,m,14);
 plot(stamp,acc(:,2),'g');
 subplot(n,m,15);
 plot(stamp,acc(:,3),'g');
+
+%% === plot bias ===
+bias_file = '/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/bias.txt';
+
+data = load(bias_file);
+
+stamp = data(:,1);
+acc_bias = data(:,2:4);
+omega_bias = data(:,5:7);
+
+subplot(n,m,16);
+plot(stamp,acc_bias(:,1),'g');
+hold on;
+title('x- acc_bias (0)');
+subplot(n,m,17);
+plot(stamp,acc_bias(:,2),'g');
+hold on;
+title('y- acc_bias (1)');
+subplot(n,m,18);
+plot(stamp,acc_bias(:,3),'g');
+hold on;
+title('z- acc_bias (2)');
+
+subplot(n,m,19);
+plot(stamp,omega_bias(:,1),'g');
+hold on;
+title('x- omega_bias (0)');
+subplot(n,m,20);
+plot(stamp,omega_bias(:,2),'g');
+hold on;
+title('y- omega_bias (1)');
+subplot(n,m,21);
+plot(stamp,omega_bias(:,3),'g');
+hold on;
+title('z- omega_bias (2)');

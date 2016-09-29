@@ -10,8 +10,8 @@
 
 using namespace std;
 
-#define ACC_WEIGHT 0.01
-#define OMEGA_WEIGHT 1
+#define ACC_WEIGHT 0.05
+#define OMEGA_WEIGHT 0.2
 
 extern vector<Sophus::SE3d> SE3_vec;
 extern vector<double> pose_ts_vec;
@@ -22,6 +22,10 @@ extern double deltaT;
 
 vector<Sophus::SE3d> new_SE3_vec;
 int imu_idx;
+double acc_bias[3];
+double omega_bias[3];
+vector<Eigen::Vector3d> acc_bias_vec;
+vector<Eigen::Vector3d> omega_bias_vec;
 
 struct vio_functor
 {
@@ -48,8 +52,9 @@ struct acc_functor
                      const T* const p1, const T* const q1,
                      const T* const p2, const T* const q2,
                      const T* const p3, const T* const q3,
+                     const T* const a_bias,
 
-                     const T* const acc, const T* const u,
+                     const T* const imu_info,
 
                      T* residual) const
     {
@@ -110,15 +115,15 @@ struct acc_functor
         B = tmp_B;
         // --------------------
 
-        Eigen::Matrix<T,4,1> T1( T(1.0), u[0], u[0]*u[0], u[0]*u[0]*u[0]);
+        Eigen::Matrix<T,4,1> T1( T(1.0), imu_info[0], imu_info[0]*imu_info[0], imu_info[0]*imu_info[0]*imu_info[0]);
         Eigen::Matrix<T,4,1> T2;
         T2 = B*T1;
 
-        Eigen::Matrix<T,4,1> dT1( T(0.0), T(1.0), T(2.0)*u[0], T(3.0)*u[0]*u[0]);
+        Eigen::Matrix<T,4,1> dT1( T(0.0), T(1.0), T(2.0)*imu_info[0], T(3.0)*imu_info[0]*imu_info[0]);
         Eigen::Matrix<T,4,1> dT2;
         dT2 = T(1.0/deltaT) * B * dT1;
 
-        Eigen::Matrix<T,4,1> ddT1( T(0.0), T(0.0), T(2.0), T(6.0)*u[0]);
+        Eigen::Matrix<T,4,1> ddT1( T(0.0), T(0.0), T(2.0), T(6.0)*imu_info[0]);
         Eigen::Matrix<T,4,1> ddT2;
         ddT2 = T(1.0/(deltaT*deltaT)) * B * ddT1;
 
@@ -170,9 +175,9 @@ struct acc_functor
 
 
         // ---- get residual ----
-        residual[0] = (spline_acc(0,0) - acc[0]) * T(ACC_WEIGHT);
-        residual[1] = (spline_acc(1,0) - acc[1]) * T(ACC_WEIGHT);
-        residual[2] = (spline_acc(2,0) - acc[2]) * T(ACC_WEIGHT);
+        residual[0] = (spline_acc(0,0) + a_bias[0] - imu_info[1]) * T(ACC_WEIGHT);
+        residual[1] = (spline_acc(1,0) + a_bias[1] - imu_info[2]) * T(ACC_WEIGHT);
+        residual[2] = (spline_acc(2,0) + a_bias[2] - imu_info[3]) * T(ACC_WEIGHT);
 
         return true;
     }
@@ -185,8 +190,9 @@ struct omega_functor
                      const T* const p1, const T* const q1,
                      const T* const p2, const T* const q2,
                      const T* const p3, const T* const q3,
+                     const T* const w_bias,
 
-                     const T* const omega, const T* const u,
+                     const T* const imu_info,
 
                      T* residual) const
     {
@@ -247,11 +253,11 @@ struct omega_functor
         B = tmp_B;
         // --------------------
 
-        Eigen::Matrix<T,4,1> T1( T(1.0), u[0], u[0]*u[0], u[0]*u[0]*u[0]);
+        Eigen::Matrix<T,4,1> T1( T(1.0), imu_info[0], imu_info[0]*imu_info[0], imu_info[0]*imu_info[0]*imu_info[0]);
         Eigen::Matrix<T,4,1> T2;
         T2 = B*T1;
 
-        Eigen::Matrix<T,4,1> dT1( T(0.0), T(1.0), T(2.0)*u[0], T(3.0)*u[0]*u[0]);
+        Eigen::Matrix<T,4,1> dT1( T(0.0), T(1.0), T(2.0)*imu_info[0], T(3.0)*imu_info[0]*imu_info[0]);
         Eigen::Matrix<T,4,1> dT2;
         dT2 = T(1.0/deltaT) * B * dT1;
 
@@ -304,9 +310,9 @@ struct omega_functor
 
 
         // ---- get residual ----
-        residual[0] = (wx - omega[0]) * T(OMEGA_WEIGHT);
-        residual[1] = (wy - omega[1]) * T(OMEGA_WEIGHT);
-        residual[2] = (wz - omega[2]) * T(OMEGA_WEIGHT);
+        residual[0] = (wx + w_bias[0] - imu_info[4]) * T(OMEGA_WEIGHT);
+        residual[1] = (wy + w_bias[1] - imu_info[5]) * T(OMEGA_WEIGHT);
+        residual[2] = (wz + w_bias[2] - imu_info[6]) * T(OMEGA_WEIGHT);
 
         return true;
     }
@@ -355,43 +361,36 @@ void ceres_solve(int head)
     int l = imu_ts_vec.size();
 
     int imu_cnt = 0;
-    vector<double*> acc_list;
-    acc_list.clear();
-    vector<double*> omega_list;
-    omega_list.clear();
-    vector<double*> ts_list;
-    ts_list.clear();
+    vector<double*> imu_info_list;
+    imu_info_list.clear();
 
     for (;imu_idx<l;imu_idx++)
     {
         if (ts_down_limit > imu_ts_vec[imu_idx]) continue;
         if (imu_ts_vec[imu_idx] >= ts_up_limit) break;
 
-        acc_list.push_back( (double*)malloc(sizeof(double)*3) );  // malloc 3 double
-        *(acc_list[imu_cnt]) = imu_acc_vec[imu_idx][0];
-        *(acc_list[imu_cnt]+1) = imu_acc_vec[imu_idx][1];
-        *(acc_list[imu_cnt]+2) = imu_acc_vec[imu_idx][2];
+        imu_info_list.push_back( (double*)malloc(sizeof(double)*7) );  // malloc 1+3+3 double  (u,acc,omega)
+        *(imu_info_list[imu_cnt]) = (imu_ts_vec[imu_idx]-pose_ts_vec[head+1])/deltaT;
+        *(imu_info_list[imu_cnt]+1) = imu_acc_vec[imu_idx][0];
+        *(imu_info_list[imu_cnt]+2) = imu_acc_vec[imu_idx][1];
+        *(imu_info_list[imu_cnt]+3) = imu_acc_vec[imu_idx][2];
+        *(imu_info_list[imu_cnt]+4) = imu_omega_vec[imu_idx][0];
+        *(imu_info_list[imu_cnt]+5) = imu_omega_vec[imu_idx][1];
+        *(imu_info_list[imu_cnt]+6) = imu_omega_vec[imu_idx][2];
 
-        omega_list.push_back( (double*)malloc(sizeof(double)*3) );  // malloc 3 double
-        *(omega_list[imu_cnt]) = imu_omega_vec[imu_idx][0];
-        *(omega_list[imu_cnt]+1) = imu_omega_vec[imu_idx][1];
-        *(omega_list[imu_cnt]+2) = imu_omega_vec[imu_idx][2];
-
-        ts_list.push_back( (double*)malloc(sizeof(double)) );
-        *(ts_list[imu_cnt]) = (imu_ts_vec[imu_idx]-pose_ts_vec[head+1])/deltaT;
-
-        cost_function = new ceres::AutoDiffCostFunction<acc_functor, 3, 3,4,3,4,3,4,3,4, 3,1>(new acc_functor);
+        cost_function = new ceres::AutoDiffCostFunction<acc_functor, 3, 3,4,3,4,3,4,3,4, 3, 7>(new acc_functor);
         problem.AddResidualBlock(cost_function,NULL, &p[0][0],&q[0][0],&p[1][0],&q[1][0],&p[2][0],&q[2][0],&p[3][0],&q[3][0],
-                                                     acc_list[imu_cnt],ts_list[imu_cnt]
+                                                     acc_bias,
+                                                     imu_info_list[imu_cnt]
                                 );
-        problem.SetParameterBlockConstant(acc_list[imu_cnt]);
-        problem.SetParameterBlockConstant(ts_list[imu_cnt]);
 
-        cost_function = new ceres::AutoDiffCostFunction<omega_functor, 3, 3,4,3,4,3,4,3,4, 3,1>(new omega_functor);
+        cost_function = new ceres::AutoDiffCostFunction<omega_functor, 3, 3,4,3,4,3,4,3,4, 3, 7>(new omega_functor);
         problem.AddResidualBlock(cost_function,NULL, &p[0][0],&q[0][0],&p[1][0],&q[1][0],&p[2][0],&q[2][0],&p[3][0],&q[3][0],
-                                                     omega_list[imu_cnt],ts_list[imu_cnt]
+                                                     omega_bias,
+                                                     imu_info_list[imu_cnt]
                                 );
-        problem.SetParameterBlockConstant(omega_list[imu_cnt]);
+
+        problem.SetParameterBlockConstant(imu_info_list[imu_cnt]);
 
         imu_cnt++;
     }
@@ -407,9 +406,7 @@ void ceres_solve(int head)
     // free constant parameters
     for (int i=0;i<imu_cnt;i++)
     {
-        free(acc_list[i]);
-        free(omega_list[i]);
-        free(ts_list[i]);
+        free(imu_info_list[i]);
     }
 
     // update
@@ -434,11 +431,13 @@ void output_result()
     FILE *solve_omega_file;  // Solved B-spline': ts \omega
     FILE *solve_vel_file;  // Solved B-spline': ts vel
     FILE *solve_acc_file;  // Solved B-spline'': ts acc
+    FILE *bias_file;  // ts acc_bias omega_bias
 
     solve_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_pose.txt","w");
     solve_omega_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_omega.txt","w");
     solve_vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_vel.txt","w");
     solve_acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_acc.txt","w");
+    bias_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/bias.txt","w");
 
     // ------------
     Eigen::Matrix4d B;
@@ -567,10 +566,21 @@ void output_result()
         }
     }
 
+    // output bias
+    for (int i=0;i<l-3;i++)
+    {
+        fprintf(bias_file,"%lf %lf %lf %lf %lf %lf %lf\n",
+                           pose_ts_vec[i],
+                           acc_bias_vec[i][0],acc_bias_vec[i][1],acc_bias_vec[i][2],
+                           omega_bias_vec[i][0],omega_bias_vec[i][1],omega_bias_vec[i][2]
+               );
+    }
+
     fclose(solve_file);
     fclose(solve_omega_file);
     fclose(solve_vel_file);
     fclose(solve_acc_file);
+    fclose(bias_file);
 }
 
 void ceres_process()
@@ -583,9 +593,20 @@ void ceres_process()
     for (int i=0;i<l;i++)
         new_SE3_vec[i] = SE3_vec[i];
 
+    // set bias initial guess
+    for (int i=0;i<3;i++)
+    {
+        acc_bias[i] = 0.0;
+        omega_bias[i] = 0.0;
+    }
+    acc_bias_vec.clear();
+    omega_bias_vec.clear();
+
     for (int i=0;i<l-3;i++)
     {
         ceres_solve(i);
+        acc_bias_vec.push_back(Eigen::Vector3d(acc_bias[0],acc_bias[1],acc_bias[2]));
+        omega_bias_vec.push_back(Eigen::Vector3d(omega_bias[0],omega_bias[1],omega_bias[2]));
     }
 
     // ---- output to file ----
