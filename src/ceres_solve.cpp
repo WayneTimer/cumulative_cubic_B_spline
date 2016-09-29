@@ -10,8 +10,8 @@
 
 using namespace std;
 
-#define ACC_WEIGHT 0.2
-#define OMEGA_WEIGHT 0.5
+#define ACC_WEIGHT 0.01
+#define OMEGA_WEIGHT 1
 
 extern vector<Sophus::SE3d> SE3_vec;
 extern vector<double> pose_ts_vec;
@@ -395,12 +395,6 @@ void ceres_solve(int head)
 
         imu_cnt++;
     }
-    for (int i=0;i<imu_cnt;i++)
-    {
-        free(acc_list[i]);
-        free(omega_list[i]);
-        free(ts_list[i]);
-    }
 
     // solving
     ceres::Solver::Options options;
@@ -409,6 +403,14 @@ void ceres_solve(int head)
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
     cout << summary.BriefReport() << endl;
+
+    // free constant parameters
+    for (int i=0;i<imu_cnt;i++)
+    {
+        free(acc_list[i]);
+        free(omega_list[i]);
+        free(ts_list[i]);
+    }
 
     // update
     for (int i=0;i<4;i++)
