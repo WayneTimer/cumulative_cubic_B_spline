@@ -18,6 +18,7 @@ extern vector<double> pose_ts_vec;
 extern vector<double> imu_ts_vec;
 extern vector<Eigen::Vector3d> imu_acc_vec;
 extern vector<Eigen::Vector3d> imu_omega_vec;
+extern Eigen::Matrix4d B;
 extern double deltaT;
 
 vector<Sophus::SE3d> new_SE3_vec;
@@ -234,25 +235,6 @@ struct omega_functor
 
         Sophus::SE3Group<T> RTl0 = omega_SE3[0];
 
-        // ---- construct B ----
-        Eigen::Matrix<T,4,4> B;
-        B.setZero();
-        B(0,0) = T(6.0);
-        B(1,0) = T(5.0);
-        B(1,1) = T(3.0);
-        B(1,2) = T(-3.0);
-        B(1,3) = T(1.0);
-        B(2,0) = T(1.0);
-        B(2,1) = T(3.0);
-        B(2,2) = T(3.0);
-        B(2,3) = T(-2.0);
-        B(3,3) = T(1.0);
-
-        Eigen::Matrix<T,4,4> tmp_B;
-        tmp_B = T(1.0/6.0) * B;
-        B = tmp_B;
-        // --------------------
-
         Eigen::Matrix<T,4,1> T1( T(1.0), imu_info[0], imu_info[0]*imu_info[0], imu_info[0]*imu_info[0]*imu_info[0]);
         Eigen::Matrix<T,4,1> T2;
         T2 = B*T1;
@@ -314,6 +296,22 @@ struct omega_functor
         residual[1] = (wy + w_bias[1] - imu_info[5]) * T(OMEGA_WEIGHT);
         residual[2] = (wz + w_bias[2] - imu_info[6]) * T(OMEGA_WEIGHT);
 
+        return true;
+    }
+};
+
+struct blur_vo_functor
+{
+    template <typename T>
+    bool operator() (const T* const p0, const T* const q0,
+                     const T* const p1, const T* const q1,
+                     const T* const p2, const T* const q2,
+                     const T* const p3, const T* const q3,
+
+                     const T* const imu_info,
+
+                     T* residual) const
+    {
         return true;
     }
 };
@@ -438,28 +436,6 @@ void output_result()
     solve_vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_vel.txt","w");
     solve_acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_acc.txt","w");
     bias_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/bias.txt","w");
-
-    // ------------
-    Eigen::Matrix4d B;
-    B.setZero();
-
-    B(0,0) = 6.0;
-
-    B(1,0) = 5.0;
-    B(1,1) = 3.0;
-    B(1,2) = -3.0;
-    B(1,3) = 1.0;
-
-    B(2,0) = 1.0;
-    B(2,1) = 3.0;
-    B(2,2) = 3.0;
-    B(2,3) = -2.0;
-
-    B(3,3) = 1.0;
-
-    Eigen::Matrix4d tmp_B;
-    tmp_B = 1.0/6.0 * B;
-    B = tmp_B;
 
     //---------------------
     double diff = 0.001;  // 1ms intepolate

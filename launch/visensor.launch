@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="ISO-8859-15"?>
+<launch>
+    <node pkg="Dense_Tracking" type="Dense_Tracking" name="Dense_Tracking" args="visensor" output="screen">
+        <rosparam file="$(find Dense_Tracking)/config/camchain-imucam-hometimerROS_bags2forcali.yaml" command="load" />
+    </node>
+
+    <node ns="/" name="stereo_image_proc" pkg="stereo_image_proc" type="stereo_image_proc" clear_params="true" output="screen">
+        <remap from="/left/image_raw" to="/cam1/image_raw" />
+        <remap from="/left/camera_info" to="/cam1/camera_info" />
+        <remap from="/right/image_raw" to="/cam0/image_raw" />
+        <remap from="/right/camera_info" to="/cam0/camera_info" />
+          <param name="queue_size" value="200000" />
+          <param name="disparity_range" value="64" />
+          <param name="stereo_algorithm" value="1" />  <!-- 0-BM, 1-SGBM -->
+    </node>
+    <node  name="disp_view" pkg="image_view" type="disparity_view" clear_params="true" output="screen">
+        <remap from="image" to="disparity" />
+    </node> 
+</launch>
