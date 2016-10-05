@@ -23,6 +23,8 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   std_msgs
+  image_transport
+  cv_bridge
 )
 
 find_package(Ceres REQUIRED)
@@ -36,6 +38,6 @@ include_directories(
   ${CERES_INCLUDE_DIRS}
 )
 
-add_executable(cumulative_cubic_B_spline src/main.cpp src/utils.cpp src/ceres_solve.cpp)
+add_executable(cumulative_cubic_B_spline src/main.cpp src/utils.cpp src/ceres_solve.cpp src/data_structure.cpp)
 target_link_libraries(cumulative_cubic_B_spline ${catkin_LIBRARIES} ${CERES_LIBRARIES} dw)
 add_dependencies(cumulative_cubic_B_spline cumulative_cubic_B_spline_generate_messages_cpp)

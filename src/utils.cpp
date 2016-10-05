@@ -1,5 +1,15 @@
 #include "utils.h"
 
+// 0:equ, -1:left<right, 1:left>right
+int double_equ_check(double x,double y,double eps)
+{
+    double t;
+    t = x-y;
+    if (t<-eps) return -1;
+    if (t>eps) return 1;
+    return 0;
+}
+
 // Shen's 6910P L2.pdf (P20): Z_1 Y_2 X_3
 Eigen::Vector3d R_to_ypr(const Eigen::Matrix3d& R)
 {
@@ -40,4 +50,28 @@ Eigen::Matrix3d ypr_to_R(const Eigen::Vector3d& theta)
     R(2,2) = cos(e2)*cos(e3);
 
     return R;
+}
+
+// get depth from disparity
+int cal_depth_img(cv::Mat& disparity,Eigen::MatrixXd& depth,double baseline,double f)
+{
+    int depth_cnt = 0;
+    int h = disparity.rows;
+    int w = disparity.cols;
+
+    depth = Eigen::MatrixXd::Zero(h,w);
+
+    for (int u=0;u<w;u++)
+        for (int v=0;v<h;v++)
+        {
+            float d = disparity.at<float>(v,u);
+            if ( d<2.0 )  // default: 3.0
+                depth(v,u) = 0.0;
+            else
+            {
+                depth(v,u) = baseline * f / d;
+                depth_cnt++;
+            }
+        }
+    return depth_cnt;
 }

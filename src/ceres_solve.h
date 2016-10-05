@@ -1,1 +1,1 @@
-void ceres_process();
+void ceres_process(int head);

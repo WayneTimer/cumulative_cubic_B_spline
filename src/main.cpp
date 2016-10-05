@@ -12,14 +12,21 @@ backward::SignalHandling sh;
 #include <eigen3/Eigen/Dense>
 #include <ros/ros.h>
 #include <ros/package.h>
-#include <sensor_msgs/Imu.h>
 #include <sophus/se3.hpp>
 #include <boost/thread.hpp>
-#include <nav_msgs/Odometry.h>
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <nav_msgs/Path.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <stereo_msgs/DisparityImage.h>
+#include <sensor_msgs/CameraInfo.h>
+#include <message_filters/subscriber.h>
+#include <message_filters/synchronizer.h>
+#include <message_filters/sync_policies/exact_time.h>
 
 #include "utils.h"
 #include "ceres_solve.h"
+#include "data_structure.h"
 
 using namespace std;
 
@@ -31,17 +38,18 @@ queue<stereo_msgs::DisparityImage> disp_buffer;
 queue<sensor_msgs::Imu> imu_buffer;
 boost::mutex mtx;
 Eigen::Matrix4d B;
-FILE *file;  // B-spline: ts p \theta
-FILE *omega_file;  // B-spline': ts \omega
-FILE *vel_file;  // B-spline': ts vel
-FILE *acc_file;  // B-spline'': ts acc
-FILE *debug_file;  // VINS: ts p \theta vel
+FILE *solve_file;  // Solved B-spline: ts p \theta
+FILE *solve_omega_file;  // Solved B-spline': ts \omega
+FILE *solve_vel_file;  // Solved B-spline': ts vel
+FILE *solve_acc_file;  // Solved B-spline'': ts acc
 FILE *debug_imu_file;  // IMU: ts acc \omega
-double deltaT = 0.05;  // 20HZ img (50ms)
+double deltaT;       // eg: 20HZ img (50ms) -> 0.05
 nav_msgs::Path path;
 Eigen::Vector3d g0,initial_omega_bias;
-double start_time_stamp,last_imu_stamp;
+ros::Time start_time_stamp;
+double last_imu_stamp;
 int key_frame_no;
+int calc_level;
 
 void ros_pub_points(State& state, ros::Publisher& pub_pc2, ros::Time& ros_stamp)
 {
@@ -148,9 +156,15 @@ void vision_callback(
     const sensor_msgs::ImageConstPtr& msg_img_l,
     const stereo_msgs::DisparityImageConstPtr& msg_disp)
 {
+    ros::Duration img_delay(cali.exposure_time/2.0);  // visensor's img stamp is the middle of exposure period
+    sensor_msgs::Image img_msg = *msg_img_l;
+    stereo_msgs::DisparityImage disp_msg = *msg_disp;
+    img_msg.header.stamp = img_msg.header.stamp + img_delay;
+    disp_msg.header.stamp = disp_msg.header.stamp + img_delay;
+    
     mtx.lock();
-    img1_buffer.push(*msg_img_l);
-    disp_buffer.push(*msg_disp);
+    img1_buffer.push(img_msg);
+    disp_buffer.push(disp_msg);
     mtx.unlock();
 }
 
@@ -171,11 +185,10 @@ void spin_thread()
 
 void init()
 {
-    file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_pose.txt","w");
-    omega_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_omega.txt","w");
-    vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_vel.txt","w");
-    acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/spline_acc.txt","w");
-    debug_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_gt_pose.txt","w");
+    solve_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_pose.txt","w");
+    solve_omega_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_omega.txt","w");
+    solve_vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_vel.txt","w");
+    solve_acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_acc.txt","w");
     debug_imu_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_imu.txt","w");
     // ---- construct B ----
     B.setZero();
@@ -208,6 +221,15 @@ void init()
         ROS_ERROR("cali init error!");
         exit(1);
     }
+    if (
+        !nh.getParam("calc_level",calc_level) ||
+        !nh.getParam("exposure_time",cali.exposure_time) ||
+        !nh.getParam("img_hz",cali.img_hz)
+       )
+        {
+            puts("Can not read param from .launch !");
+        }
+    deltaT = 1.0/cali.img_hz;
     cali.view();
 
     while (!imu_buffer.empty()) imu_buffer.pop();
@@ -261,7 +283,7 @@ void get_stationary_imu()
     mtx.unlock();
     // -----
     g0.setZero();
-    omega_bias.setZero();
+    initial_omega_bias.setZero();
     int cnt = 0;
     mtx.lock();
     while (imu_buffer.empty() || imu_buffer.front().header.stamp < img_stamp)
@@ -272,9 +294,9 @@ void get_stationary_imu()
             g0(0) = g0(0) + imu_buffer.front().linear_acceleration.x;
             g0(1) = g0(1) + imu_buffer.front().linear_acceleration.y;
             g0(2) = g0(2) + imu_buffer.front().linear_acceleration.z;
-            omega_bias(0) = omega_bias(0) + imu_buffer.front().angular_velocity.x;
-            omega_bias(1) = omega_bias(1) + imu_buffer.front().angular_velocity.y;
-            omega_bias(2) = omega_bias(2) + imu_buffer.front().angular_velocity.z;
+            initial_omega_bias(0) = initial_omega_bias(0) + imu_buffer.front().angular_velocity.x;
+            initial_omega_bias(1) = initial_omega_bias(1) + imu_buffer.front().angular_velocity.y;
+            initial_omega_bias(2) = initial_omega_bias(2) + imu_buffer.front().angular_velocity.z;
             imu_buffer.pop();
         }
         mtx.unlock();
@@ -283,11 +305,11 @@ void get_stationary_imu()
     }
     mtx.unlock();
     g0 = g0 / cnt;
-    omega_bias = omega_bias / cnt;
+    initial_omega_bias = initial_omega_bias / cnt;
 
-    // ===== output g0, omega_bias, cnt =====
+    // ===== output g0, initial_omega_bias, cnt =====
     cout << "g0: " << g0.transpose() << endl;
-    cout << "omega_bias: " << omega_bias.transpose() << endl;
+    cout << "initial_omega_bias: " << initial_omega_bias.transpose() << endl;
     cout << "cnt: " << cnt << endl;
 }
 
@@ -302,35 +324,21 @@ void load_img_disp(State& state, cv::Mat &img)
     for (int level=0;level<PYRDOWN_LEVEL;level++)
     {
         pyr_down(state,level); // also pyr_down depth
-        calc_gradient(state.img_data[level],
-                      state.gx[level],
-                      state.gy[level]);
     }
 }
 
 void real_data(State& state)
 {
     cv::Mat img,disp;
-    sensor_msgs::Image img_msg;
-    stereo_msgs::DisparityImage disp_msg;
 
     // get IMG & disp
-    mtx.lock();
-    while (img1_buffer.empty() || disp_buffer.empty())
-    {
-        mtx.unlock();
-        usleep(1000);
-        mtx.lock();
-    }
-    img_msg = img1_buffer.front();
-    disp_msg = disp_buffer.front();
+    img = cv_bridge::toCvCopy(img1_buffer.front())->image;
+    disp = cv_bridge::toCvCopy(disp_buffer.front().image)->image;
+    state.ros_stamp = img1_buffer.front().header.stamp;
+    state.stamp = (state.ros_stamp - start_time_stamp).toSec();
+
     img1_buffer.pop();
     disp_buffer.pop();
-    mtx.unlock();
-
-    img = cv_bridge::toCvCopy(img_msg)->image;
-    disp = cv_bridge::toCvCopy(disp_msg.image)->image;
-    state.ros_stamp = img_msg.header.stamp;
 
     int depth_cnt;
     depth_cnt = cal_depth_img(disp,state.depth[0],cali.baseline,cali.fx[0]);  //float
@@ -338,7 +346,6 @@ void real_data(State& state)
 
     if (graph.state.size()==0) // first state, only get IMG & disp & set p=(0,0,0)
     {
-        start_time_stamp = img_msg.header.stamp.toSec();
         state.p.setZero();
         state.q.setIdentity();
         state.v.setZero();
@@ -363,22 +370,14 @@ void real_data(State& state)
         beta.setZero();
         DeltaT = 0.0;
 
-        mtx.lock();
-        while (imu_buffer.empty() || imu_buffer.front().header.stamp < state.ros_stamp)
+        while (!imu_buffer.empty() && imu_buffer.front().header.stamp < state.ros_stamp)
         {
-            if (imu_buffer.empty())
-            {
-                mtx.unlock();
-                usleep(1000);
-                mtx.lock();
-                continue;
-            }
             sensor_msgs::Imu imu_msg;
             imu_msg = imu_buffer.front();
             imu_buffer.pop();
-            mtx.unlock();
 
-            double imu_t = imu_msg.header.stamp.toSec() - start_time_stamp;
+            double imu_t = (imu_msg.header.stamp - start_time_stamp).toSec();
+
             double dt = imu_t - last_imu_stamp;
             DeltaT += dt;
             Eigen::Vector3d a,w;
@@ -386,9 +385,9 @@ void real_data(State& state)
             a(0) = imu_msg.linear_acceleration.x;
             a(1) = imu_msg.linear_acceleration.y;
             a(2) = imu_msg.linear_acceleration.z;
-            w(0) = imu_msg.angular_velocity.x - omega_bias(0);
-            w(1) = imu_msg.angular_velocity.y - omega_bias(1);
-            w(2) = imu_msg.angular_velocity.z - omega_bias(2);
+            w(0) = imu_msg.angular_velocity.x - initial_omega_bias(0);
+            w(1) = imu_msg.angular_velocity.y - initial_omega_bias(1);
+            w(2) = imu_msg.angular_velocity.z - initial_omega_bias(2);
 
             Eigen::Quaterniond dq;
             dq.x() = w(0)*dt*0.5;
@@ -411,6 +410,13 @@ void real_data(State& state)
             w = cali.R_I_2_C * w + cali.T_I_2_C;
             // -----
 
+            fprintf(debug_imu_file,"%lf %lf %lf %lf %lf %lf %lf\n",
+                                    imu_t,
+                                    a(0),a(1),a(2),
+                                    w(0),w(1),w(2)
+                   );
+            state.imu_data.push_back(IMU_DATA(imu_t,a,w));
+
             alpha += beta*dt + 0.5*R_k1_k*a*dt*dt;
             beta += R_k1_k*a*dt;
 
@@ -427,169 +433,52 @@ void real_data(State& state)
     }
 }
 
+// B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s p,v,q
+void update_state(int head)
+{
+    int last_no = head+2;
+    double &DeltaT = graph.state[head+3].DeltaT;
+    Eigen::Matrix3d &R_k1_k = graph.state[head+3].R_k1_k;
+    Eigen::Vector3d &alpha = graph.state[head+3].alpha;
+    Eigen::Vector3d &beta = graph.state[head+3].beta;
+    Eigen::Vector3d &pk1 = graph.state[head+3].p;
+    Eigen::Vector3d &vk1 = graph.state[head+3].v;
+    Eigen::Quaterniond &qk1 = graph.state[head+3].q;
+
+    pk1 = graph.state[last_no].p 
+        + graph.state[last_no].q.toRotationMatrix()*graph.state[last_no].v*DeltaT
+        + graph.state[last_no].q.toRotationMatrix()*alpha; // g0 has already removed
+    vk1 = R_k1_k.transpose()
+        * (graph.state[last_no].v + beta);  // g0 has already removed
+    qk1 = Eigen::Quaterniond(graph.state[last_no].q.toRotationMatrix() * R_k1_k);
+    qk1.normalize();
+}
+
 // ensure there is enough msg
 void process()
 {
-    ros::Time start_time_stamp = odom_buffer.front().header.stamp;
-    while (!odom_buffer.empty())
-    {
-        ros::Time odom_stamp;
-        geometry_msgs::Pose pose;
-        Eigen::Vector3d linear_vel;
-        odom_stamp = odom_buffer.front().header.stamp;
-        pose = odom_buffer.front().pose.pose;
-        linear_vel(0) = odom_buffer.front().twist.twist.linear.x;
-        linear_vel(1) = odom_buffer.front().twist.twist.linear.y;
-        linear_vel(2) = odom_buffer.front().twist.twist.linear.z;
-        pose_ts_vec.push_back((odom_stamp - start_time_stamp).toSec());
-        odom_buffer.pop();
+    start_time_stamp = img1_buffer.front().header.stamp;  // ensure img1_buffer & disp_buffer are totally the same
 
-        Eigen::Quaterniond q;
-        q.w() = pose.orientation.w;
-        q.x() = pose.orientation.x;
-        q.y() = pose.orientation.y;
-        q.z() = pose.orientation.z;
-        Eigen::Vector3d p;
-        p(0) = pose.position.x;
-        p(1) = pose.position.y;
-        p(2) = pose.position.z;
-        Sophus::SE3d RT(q.toRotationMatrix(),p);
-        SE3_vec.push_back(RT);
-
-        Eigen::Matrix3d tmp_R = q.toRotationMatrix();
-        Eigen::Vector3d theta = R_to_ypr(tmp_R);
-        fprintf(debug_file,"%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf\n",
-                            (odom_stamp - start_time_stamp).toSec(),
-                            p(0),p(1),p(2),
-                            theta(0),theta(1),theta(2),
-                            linear_vel(0),linear_vel(1),linear_vel(2)
-               );
-    }
     while (!imu_buffer.empty() && imu_buffer.front().header.stamp < start_time_stamp)
     {
         imu_buffer.pop();
     }
-    while (!imu_buffer.empty())
+
+    for (int i=0;i<3;i++)   // add first 3 states
     {
-        sensor_msgs::Imu imu;
-        imu = imu_buffer.front();
-        imu_buffer.pop();
-        imu_ts_vec.push_back((imu.header.stamp - start_time_stamp).toSec());
-
-        Eigen::Vector3d tmp_acc(imu.linear_acceleration.x,imu.linear_acceleration.y,imu.linear_acceleration.z);
-        imu_acc_vec.push_back(tmp_acc);
-        Eigen::Vector3d tmp_omega(imu.angular_velocity.x,imu.angular_velocity.y,imu.angular_velocity.z);
-        imu_omega_vec.push_back(tmp_omega);
-
-        fprintf(debug_imu_file,"%lf %lf %lf %lf %lf %lf %lf\n",
-                                (imu.header.stamp - start_time_stamp).toSec(),
-                                imu.linear_acceleration.x,imu.linear_acceleration.y,imu.linear_acceleration.z,
-                                imu.angular_velocity.x,imu.angular_velocity.y,imu.angular_velocity.z
-               );
+        State state;
+        real_data(state);
+        graph.state.push_back(state);
     }
-    //---------------------
-    double diff = 0.001;  // 1ms intepolate
-    int l;
-    l = SE3_vec.size();
-    for (int i=1;i<l-2;i++)
+    int head = 0;
+    while (img1_buffer.empty() || disp_buffer.empty() || imu_buffer.empty())
     {
-        Sophus::SE3d RTl0 = SE3_vec[i-1];
-        for (double ts=pose_ts_vec[i];ts<pose_ts_vec[i+1];ts+=diff)
-        {
-            double u = (ts-pose_ts_vec[i])/deltaT;
-            Eigen::Vector4d T1(1.0,u,u*u,u*u*u);
-            Eigen::Vector4d T2;
-            T2 = B*T1;
-
-            Eigen::Vector4d dT1(0.0,1.0,2.0*u,3.0*u*u);
-            Eigen::Vector4d dT2;
-            dT2 = 1.0/deltaT * B * dT1;
-
-            Eigen::Vector4d ddT1(0.0,0.0,2.0,6.0*u);
-            Eigen::Vector4d ddT2;
-            ddT2 = 1.0/(deltaT*deltaT) * B * ddT1;
-
-            vector<Eigen::Matrix4d> A,dA,ddA;
-            A.resize(4);
-            dA.resize(4);
-            ddA.resize(4);
-            for (int j=1;j<=3;j++)  // 0 to 2 ? 1 to 3 ?  :  j= 1 to 3, diff with <Spline-fusion>
-            {
-                Eigen::VectorXd upsilon_omega = Sophus::SE3d::log(SE3_vec[i+j-2].inverse() * SE3_vec[i+j-1]);
-                Eigen::Matrix4d omega_mat;  // 4x4 se(3)
-                omega_mat.setZero();
-                omega_mat.block<3,3>(0,0) = skew<double>(upsilon_omega.tail<3>());
-                omega_mat.block<3,1>(0,3) = upsilon_omega.head<3>();
-
-                // calc A
-                double B_select = T2(j);
-                // \omega 4x4 = /omega 6x1
-                //  [ w^ v]        [ v ]
-                //  [ 0  0]        [ w ]
-                //
-                // while multiply a scalar, the same. (Ignore the last .at(3,3) 1)
-                A[j] = (Sophus::SE3d::exp(B_select * upsilon_omega)).matrix();
-
-                // calc dA
-                double dB_select = dT2(j);
-                dA[j] = A[j] * omega_mat * dB_select;
-
-                // calc ddA
-                double ddB_select = ddT2(j);
-                ddA[j] = dA[j] * omega_mat * dB_select + A[j] * omega_mat * ddB_select;
-            }
-
-            Eigen::Matrix4d all;
-
-            // get B-spline's R,T
-            all = A[1] * A[2] * A[3];
-            Eigen::Matrix4d ret = RTl0.matrix() * all;
-
-            Eigen::Vector3d T,theta;
-            Eigen::Matrix3d R;
-            T = ret.block<3,1>(0,3);
-            R = ret.block<3,3>(0,0);
-            theta = R_to_ypr(R);
-            fprintf(file,"%lf %lf %lf %lf %lf %lf %lf\n",
-                          ts,
-                          T(0),T(1),T(2),                                           
-                          theta(0),theta(1),theta(2)
-                   );
-
-            // get B-spline's omega
-            Eigen::Matrix4d dSE;
-            all = dA[1]*A[2]*A[3] + A[1]*dA[2]*A[3] + A[1]*A[2]*dA[3];
-
-            dSE = RTl0.matrix() * all;
-
-            Eigen::Matrix3d skew_R = R.transpose() * dSE.block<3,3>(0,0);
-            double wx,wy,wz;  // ? simple mean
-            wx = (-skew_R(1,2) + skew_R(2,1)) / 2.0;
-            wy = (-skew_R(2,0) + skew_R(0,2)) / 2.0;
-            wz = (-skew_R(0,1) + skew_R(1,0)) / 2.0;
-            Eigen::Vector3d linear_vel = dSE.block<3,1>(0,3);  // world frame velocity
-
-            fprintf(omega_file,"%lf %lf %lf %lf\n",
-                              ts,
-                              wx,wy,wz
-                   );
-            fprintf(vel_file,"%lf %lf %lf %lf\n",
-                              ts,
-                              linear_vel(0),linear_vel(1),linear_vel(2)
-                   );
-
-            // get B-spline's acc
-            Eigen::Matrix4d ddSE;
-            all =   ddA[1]*A[2]*A[3] + A[1]*ddA[2]*A[3] + A[1]*A[2]*ddA[3]
-                  + 2.0*dA[1]*dA[2]*A[3] + 2.0*dA[1]*A[2]*dA[3] + 2.0*A[1]*dA[2]*dA[3];
-            ddSE = RTl0.matrix() * all;
-
-            Eigen::Vector3d spline_acc = R.transpose() * (ddSE.block<3,1>(0,3) + Eigen::Vector3d(0,0,9.805));  // ? gravity not accurate
-
-            fprintf(acc_file,"%lf %lf %lf %lf\n",
-                              ts,spline_acc(0),spline_acc(1),spline_acc(2)
-                   );
-        }
+        State state;
+        real_data(state);
+        graph.state.push_back(state);
+        ceres_process(head);
+        update_state(head);  // B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s p,v,q
+        head++;
     }
 }
 
@@ -621,19 +510,22 @@ int main(int argc, char **argv)
 
     boost::thread th1(spin_thread);
 
-    getchar();
-    mtx.lock();
-    process();
-    fclose(file);
-    fclose(omega_file);
-    fclose(vel_file);
-    fclose(acc_file);
-    fclose(debug_file);
-    fclose(debug_imu_file);
+    getchar();  // Plan A: read all msg, then begin to process
 
-    ceres_process();
+    get_stationary_imu();
+
+    mtx.lock();
+
+    process();
 
     mtx.unlock();
+
+    fclose(solve_file);
+    fclose(solve_omega_file);
+    fclose(solve_vel_file);
+    fclose(solve_acc_file);
+    fclose(debug_imu_file);
+
     ros::shutdown();
 
     return 0;
