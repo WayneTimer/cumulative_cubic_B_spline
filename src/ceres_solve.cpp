@@ -234,7 +234,7 @@ public:
     }
 };
 
-struct vio_functor
+struct prior_functor
 {
     // first (p,q) -> to be optimized
     // last (p,q) -> constant (initial guess)
@@ -536,21 +536,21 @@ void ceres_solve(int head)
     double q0[4][4];
     ceres::LocalParameterization *local_parameterization = new ceres_ext::EigenQuaternionParameterization();
 
-    // add vio constraint
+    // add prior constraint
     for (int i=0;i<4;i++)
     {
-        Eigen::Vector3d T = SE3_vec[head+i].translation();
-        Eigen::Quaterniond quat(SE3_vec[head+i].rotationMatrix());
+        Eigen::Vector3d trans = SE3_vec[i].translation();
+        Eigen::Quaterniond quat(SE3_vec[i].rotationMatrix());
 
         for (int j=0;j<3;j++)
         {
-            p0[i][j] = T[j];
-            p[i][j] = T[j];
+            p0[i][j] = trans[j];
+            p[i][j] = trans[j];
         }
         q0[i][0] = quat.x(), q0[i][1] = quat.y(), q0[i][2] = quat.z(), q0[i][3] = quat.w();  // q = {x,y,z,w}
         q[i][0] = quat.x(), q[i][1] = quat.y(), q[i][2] = quat.z(), q[i][3] = quat.w();
 
-        cost_function = new ceres::AutoDiffCostFunction<vio_functor, 7, 3,4,3,4>(new vio_functor);
+        cost_function = new ceres::AutoDiffCostFunction<prior_functor, 7, 3,4,3,4>(new prior_functor);
         problem.AddResidualBlock(cost_function,NULL,&p[i][0],&q[i][0],&p0[i][0],&q0[i][0]);
 
         problem.AddParameterBlock(&q[i][0],4,local_parameterization);  // q = {x,y,z,w}
@@ -564,7 +564,7 @@ void ceres_solve(int head)
     vector<double*> imu_info_list;
     imu_info_list.clear();
 
-    int l = graph.state[head+2].imu_data.size();
+    int l = graph.state[head+2].imu_data.size();  // [head+1, head+2) imu_data be stored in state[head+2]
     for (int i=0;i<l;i++)
     {
         imu_info_list.push_back( (double*)malloc(sizeof(double)*7) );  // malloc 1+3+3 double  (u,acc,omega)
@@ -592,7 +592,6 @@ void ceres_solve(int head)
     }
 
     // add blur-VO constraint
-    // only level 2
     ceres::Grid2D<double,2> array(graph.state[head+2].img_data[calc_level].data(),0,graph.state[head+2].img_data[calc_level].rows(),0,graph.state[head+2].img_data[calc_level].cols());
     ceres::BiCubicInterpolator< ceres::Grid2D<double,2> > interpolator(array);
 
@@ -611,7 +610,7 @@ void ceres_solve(int head)
     // solving
     ceres::Solver::Options options;
     options.minimizer_progress_to_stdout = true;
-    options.line_search_sufficient_function_decrease = 1e-3;
+    options.line_search_sufficient_function_decrease = 1e-4;
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
     cout << summary.BriefReport() << endl;
@@ -634,7 +633,7 @@ void ceres_solve(int head)
         quat.z() = q[i][2];
         quat.w() = q[i][3];
 
-        SE3_vec[head+i] = Sophus::SE3d(quat.toRotationMatrix(),T);
+        SE3_vec[i] = Sophus::SE3d(quat.toRotationMatrix(),T);
     }
 }
 
@@ -669,12 +668,12 @@ void update_output_result(int head)
     // --------------------
 
 
+    Eigen::Vector3d last_linear_vel;  // in body frame, approximate to graph.state[head+2].v
+
     // output result to file
     double diff = 0.001;  // 1ms intepolate
-    int l;
-    l = SE3_vec.size();
 
-    Sophus::SE3d RTl0 = SE3_vec[head];
+    Sophus::SE3d RTl0 = SE3_vec[0];
     for (double ts=graph.state[head+1].stamp;ts<graph.state[head+2].stamp;ts+=diff)
     {
         double u = (ts-graph.state[head+1].stamp)/deltaT;
@@ -696,7 +695,7 @@ void update_output_result(int head)
         ddA.resize(4);
         for (int j=1;j<=3;j++)  // 0 to 2 ? 1 to 3 ?  :  j= 1 to 3, diff with <Spline-fusion>
         {
-            Eigen::VectorXd upsilon_omega = Sophus::SE3d::log(SE3_vec[head+j-1].inverse() * SE3_vec[head+j]);
+            Eigen::VectorXd upsilon_omega = Sophus::SE3d::log(SE3_vec[j-1].inverse() * SE3_vec[j]);
             Eigen::Matrix4d omega_mat;  // 4x4 se(3)
             omega_mat.setZero();
             omega_mat.block<3,3>(0,0) = skew<double>(upsilon_omega.tail<3>());
@@ -750,6 +749,8 @@ void update_output_result(int head)
         wz = (-skew_R(0,1) + skew_R(1,0)) / 2.0;
         Eigen::Vector3d linear_vel = dSE.block<3,1>(0,3);  // world frame velocity
 
+        last_linear_vel = R.transpose() * linear_vel;  // transform world frame vel to body frame
+
         fprintf(solve_omega_file,"%lf %lf %lf %lf\n",
                                   ts,
                                   wx,wy,wz
@@ -771,6 +772,8 @@ void update_output_result(int head)
                                 ts,spline_acc(0),spline_acc(1),spline_acc(2)
                );
     }
+
+    graph.state[head+2].v = last_linear_vel;
 }
 
 void ceres_process(int head)

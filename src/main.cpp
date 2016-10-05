@@ -37,7 +37,6 @@ queue<sensor_msgs::Image> img1_buffer;
 queue<stereo_msgs::DisparityImage> disp_buffer;
 queue<sensor_msgs::Imu> imu_buffer;
 boost::mutex mtx;
-Eigen::Matrix4d B;
 FILE *solve_file;  // Solved B-spline: ts p \theta
 FILE *solve_omega_file;  // Solved B-spline': ts \omega
 FILE *solve_vel_file;  // Solved B-spline': ts vel
@@ -48,7 +47,6 @@ nav_msgs::Path path;
 Eigen::Vector3d g0,initial_omega_bias;
 ros::Time start_time_stamp;
 double last_imu_stamp;
-int key_frame_no;
 int calc_level;
 
 void ros_pub_points(State& state, ros::Publisher& pub_pc2, ros::Time& ros_stamp)
@@ -190,28 +188,6 @@ void init()
     solve_vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_vel.txt","w");
     solve_acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_acc.txt","w");
     debug_imu_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_imu.txt","w");
-    // ---- construct B ----
-    B.setZero();
-
-    B(0,0) = 6.0;
-
-    B(1,0) = 5.0;
-    B(1,1) = 3.0;
-    B(1,2) = -3.0;
-    B(1,3) = 1.0;
-
-    B(2,0) = 1.0;
-    B(2,1) = 3.0;
-    B(2,2) = 3.0;
-    B(2,3) = -2.0;
-
-    B(3,3) = 1.0;
-
-    Eigen::Matrix4d tmp_B;
-    tmp_B = 1.0/6.0 * B;
-    B = tmp_B;
-    cout << B << endl;
-    // ----------
 
     // === read config ===
     ros::NodeHandle nh("~");
@@ -350,7 +326,6 @@ void real_data(State& state)
         state.q.setIdentity();
         state.v.setZero();
         last_imu_stamp = 0.0;
-        key_frame_no = 0;
     }
     else
     {
@@ -433,25 +408,16 @@ void real_data(State& state)
     }
 }
 
-// B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s p,v,q
+// B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s v
 void update_state(int head)
 {
     int last_no = head+2;
-    double &DeltaT = graph.state[head+3].DeltaT;
     Eigen::Matrix3d &R_k1_k = graph.state[head+3].R_k1_k;
-    Eigen::Vector3d &alpha = graph.state[head+3].alpha;
     Eigen::Vector3d &beta = graph.state[head+3].beta;
-    Eigen::Vector3d &pk1 = graph.state[head+3].p;
     Eigen::Vector3d &vk1 = graph.state[head+3].v;
-    Eigen::Quaterniond &qk1 = graph.state[head+3].q;
 
-    pk1 = graph.state[last_no].p 
-        + graph.state[last_no].q.toRotationMatrix()*graph.state[last_no].v*DeltaT
-        + graph.state[last_no].q.toRotationMatrix()*alpha; // g0 has already removed
     vk1 = R_k1_k.transpose()
         * (graph.state[last_no].v + beta);  // g0 has already removed
-    qk1 = Eigen::Quaterniond(graph.state[last_no].q.toRotationMatrix() * R_k1_k);
-    qk1.normalize();
 }
 
 // ensure there is enough msg
@@ -471,13 +437,13 @@ void process()
         graph.state.push_back(state);
     }
     int head = 0;
-    while (img1_buffer.empty() || disp_buffer.empty() || imu_buffer.empty())
+    while (!img1_buffer.empty() || !disp_buffer.empty() || !imu_buffer.empty())
     {
         State state;
         real_data(state);
         graph.state.push_back(state);
         ceres_process(head);
-        update_state(head);  // B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s p,v,q
+        update_state(head);  // B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s v
         head++;
     }
 }
