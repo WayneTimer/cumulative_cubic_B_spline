@@ -1,3 +1,5 @@
+#define UNBLUR
+
 #include <cstdio>
 #include <ceres/ceres.h>
 #include <ceres/cubic_interpolation.h>
@@ -12,10 +14,14 @@
 
 using namespace std;
 
-#define BLUR_WEIGHT 1.0
-#define PRIOR_WEIGHT 1.0
-#define ACC_WEIGHT 0.05
-#define OMEGA_WEIGHT 0.2
+#ifdef UNBLUR
+    #define DVO_WEIGHT 1.0
+#endif
+
+#define BLUR_WEIGHT 0.0001
+#define PRIOR_WEIGHT 0.0001
+#define ACC_WEIGHT 0.5
+#define OMEGA_WEIGHT 1.0
 #define INTERPOLATE_DIFF 0.01
 
 extern Graph graph;
@@ -42,7 +48,7 @@ int imu_idx;
 class blur_vo_functor  // the whole image residual
 {
 private:
-    const ceres::BiCubicInterpolator< ceres::Grid2D<double,2> >& img;
+    const ceres::BiCubicInterpolator< ceres::Grid2D<double,1> >& img;
     int height,width;
     double fx,fy,cx,cy;
     double exposure_time_u;  // in u domain
@@ -53,7 +59,7 @@ public:
     blur_vo_functor(
                     const Eigen::MatrixXd& _key_frame_img,
                     const Eigen::MatrixXd& _key_frame_depth,
-                    const ceres::BiCubicInterpolator< ceres::Grid2D<double,2> >& _img,
+                    const ceres::BiCubicInterpolator< ceres::Grid2D<double,1> >& _img,
                     int _height, int _width,
                     double _fx, double _fy, double _cx, double _cy, double _exposure_time_u) :
                     key_frame_img(_key_frame_img),
@@ -186,12 +192,13 @@ public:
 
         // ===== generate blur img =====
         residual[0] = T(0.0);
+
         int blur_inter_cnt = SE3_j.size();
         for (int v=1;v<height-1;v++)
             for (int u=1;u<width-1;u++)
             {
                 T resi = T(0.0);
-                T te_cnt = T(0.0);
+                double te_cnt = 0.0;
                 for (int j=0;j<blur_inter_cnt;j++)
                 {
                     // SE(3)_i^j = ( SE(3)_j^0 )^-1 * SE(3)_i^0
@@ -224,11 +231,164 @@ public:
                     inten_est = key_frame_img(v,u);
 
                     resi = resi + T(inten_est) - inten;
-                    te_cnt = te_cnt + T(1.0);
+                    te_cnt = te_cnt + 1.0;
                 }
-                resi = resi / te_cnt;
-                residual[0] = residual[0] + resi * resi;
+                if (double_equ_check(te_cnt,0.0,DOUBLE_EPS)>0) // ensure te_cnt > 0.0
+                {
+                    resi = resi / T(te_cnt);
+                    residual[0] = residual[0] + resi * resi;
+                }
             }
+        residual[0] = residual[0] * T(BLUR_WEIGHT);
+
+
+        return true;
+    }
+};
+
+// (head), (head+1), (head+2), (head+3)
+//        key_frame  ( blur ]
+class dvo_functor  // the whole image residual
+{
+private:
+    const ceres::BiCubicInterpolator< ceres::Grid2D<double,1> >& img;
+    int height,width;
+    double fx,fy,cx,cy;
+    double exposure_time_u;  // in u domain
+    const Eigen::MatrixXd& key_frame_img;
+    const Eigen::MatrixXd& key_frame_depth;
+
+public:
+    dvo_functor(
+                    const Eigen::MatrixXd& _key_frame_img,
+                    const Eigen::MatrixXd& _key_frame_depth,
+                    const ceres::BiCubicInterpolator< ceres::Grid2D<double,1> >& _img,
+                    int _height, int _width,
+                    double _fx, double _fy, double _cx, double _cy, double _exposure_time_u) :
+                    key_frame_img(_key_frame_img),
+                    key_frame_depth(_key_frame_depth),
+                    img(_img),
+                    height(_height), width(_width),
+                    fx(_fx), fy(_fy), cx(_cx), cy(_cy), exposure_time_u(_exposure_time_u
+                   )
+    {}
+
+    template <typename T>
+    bool operator() (const T* const p0, const T* const q0,
+                     const T* const p1, const T* const q1,
+                     const T* const p2, const T* const q2,
+                     const T* const p3, const T* const q3,
+
+                     // no need to give img stamp - ts(already delayed), and exposure period [ts-EXP, ts), in u
+                     // is always 1.0
+
+                     T* residual) const
+    {
+        vector<Eigen::Matrix<T,4,4> > A,dA;
+        A.resize(4);
+        dA.resize(4);
+
+        // ========  construct SE3 ===========
+        vector<Sophus::SE3Group<T> > SE3;
+        SE3.resize(4);
+
+        Eigen::Matrix<T,3,1> translation;
+        Eigen::Quaternion<T> quat;  // Eigen::Quaternion (w,x,y,z)
+
+        translation[0] = p0[0];
+        translation[1] = p0[1];
+        translation[2] = p0[2];
+        quat = Eigen::Quaternion<T>(q0[3],q0[0],q0[1],q0[2]);
+        SE3[0] = Sophus::SE3Group<T>(quat.toRotationMatrix(),translation);
+
+        translation[0] = p1[0];
+        translation[1] = p1[1];
+        translation[2] = p1[2];
+        quat = Eigen::Quaternion<T>(q1[3],q1[0],q1[1],q1[2]);
+        SE3[1] = Sophus::SE3Group<T>(quat.toRotationMatrix(),translation);
+
+        translation[0] = p2[0];
+        translation[1] = p2[1];
+        translation[2] = p2[2];
+        quat = Eigen::Quaternion<T>(q2[3],q2[0],q2[1],q2[2]);
+        SE3[2] = Sophus::SE3Group<T>(quat.toRotationMatrix(),translation);
+
+        translation[0] = p3[0];
+        translation[1] = p3[1];
+        translation[2] = p3[2];
+        quat = Eigen::Quaternion<T>(q3[3],q3[0],q3[1],q3[2]);
+        SE3[3] = Sophus::SE3Group<T>(quat.toRotationMatrix(),translation);
+        // ===============================
+
+        Sophus::SE3Group<T> RTl0 = SE3[0];
+
+        // ---- construct B ----
+        Eigen::Matrix<T,4,4> B;
+        B.setZero();
+        B(0,0) = T(6.0);
+        B(1,0) = T(5.0);
+        B(1,1) = T(3.0);
+        B(1,2) = T(-3.0);
+        B(1,3) = T(1.0);
+        B(2,0) = T(1.0);
+        B(2,1) = T(3.0);
+        B(2,2) = T(3.0);
+        B(2,3) = T(-2.0);
+        B(3,3) = T(1.0);
+
+        Eigen::Matrix<T,4,4> tmp_B;
+        tmp_B = T(1.0/6.0) * B;
+        B = tmp_B;
+        // --------------------
+
+        // ===== generate dense img =====
+        residual[0] = T(0.0);
+
+        for (int v=1;v<height-1;v++)
+            for (int u=1;u<width-1;u++)
+            {
+                // SE(3)_i^j = ( SE(3)_j^0 )^-1 * SE(3)_i^0
+                Sophus::SE3Group<T> SE3_i_2_j = SE3[2].inverse() * SE3[1];
+
+                Eigen::Matrix<T,3,1> p_ref,p_cur;  // [x,y,z]
+                double lambda;
+                lambda = key_frame_depth(v,u);
+
+                if (double_equ_check(lambda,0.0,DOUBLE_EPS)<=0) // no depth
+                    continue;
+
+                p_ref[0] = T( (u-cx)/fx * lambda );
+                p_ref[1] = T( (v-cy)/fy * lambda );
+                p_ref[2] = T( lambda );
+
+                p_cur = SE3_i_2_j * p_ref;
+
+                T u_new,v_new;
+                u_new = (p_cur[0]/p_cur[2]) * T(fx) + T(cx);
+                v_new = (p_cur[1]/p_cur[2]) * T(fy) + T(cy);
+
+                if (u_new < T(1) || u_new >= T(width-1) || v_new < T(1) || v_new >= T(height-1) )
+                    continue;
+
+                T inten;
+                img.Evaluate(v_new,u_new,&inten);
+
+                double inten_est;
+                inten_est = key_frame_img(v,u);
+
+                T resi = T(inten_est) - inten;
+
+                resi = resi*resi;
+
+                T resi_weight = T(1.0);
+                if (resi > T(25.0))  // 5.0 * 5.0
+                {
+                    resi_weight = T(25.0) / resi;
+                }
+
+                residual[0] = residual[0] + resi * resi_weight;
+            }
+        residual[0] = residual[0] * T(DVO_WEIGHT);
 
         return true;
     }
@@ -377,7 +537,7 @@ struct acc_functor
               + T(2.0)*dA[1]*dA[2]*A[3] + T(2.0)*dA[1]*A[2]*dA[3] + T(2.0)*A[1]*dA[2]*dA[3];
         ddSE = RTl0.matrix() * all;
 
-        Eigen::Matrix<T,3,1> spline_acc = R.transpose() * (ddSE.template block<3,1>(0,3) + Eigen::Matrix<T,3,1>(T(0),T(0),T(9.805)));  // ? gravity not accurate
+        Eigen::Matrix<T,3,1> spline_acc = R.transpose() * ddSE.template block<3,1>(0,3);  // ? g0 has been removed
 
 
         // ---- get residual ----
@@ -591,25 +751,49 @@ void ceres_solve(int head)
         imu_cnt++;
     }
 
+#ifdef UNBLUR
     // add blur-VO constraint
-    ceres::Grid2D<double,2> array(graph.state[head+2].img_data[calc_level].data(),0,graph.state[head+2].img_data[calc_level].rows(),0,graph.state[head+2].img_data[calc_level].cols());
-    ceres::BiCubicInterpolator< ceres::Grid2D<double,2> > interpolator(array);
+    // transform default col-major Eigen matrix to row-major, to form ceres::Grid2d
+    Eigen::Matrix<double,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> rowmajor_img = graph.state[head+2].img_data[calc_level];
+    ceres::Grid2D<double,1> array(rowmajor_img.data(),0,rowmajor_img.rows(),0,rowmajor_img.cols());
+    ceres::BiCubicInterpolator< ceres::Grid2D<double,1> > interpolator(array);
 
+    // dvo-functor
+    cost_function = new ceres::AutoDiffCostFunction<dvo_functor, 1, 3,4,3,4,3,4,3,4>
+                        (
+                         new dvo_functor(
+                                             graph.state[head+1].img_data[calc_level],graph.state[head+1].depth[calc_level],interpolator,
+                                             graph.state[head+1].img_data[calc_level].rows(),graph.state[head+1].img_data[calc_level].cols(),
+                                             cali.fx[calc_level], cali.fy[calc_level], cali.cx[calc_level], cali.cy[calc_level],
+                                             cali.exposure_time/deltaT
+                                            )
+                        );
+    problem.AddResidualBlock(cost_function,NULL, &p[0][0],&q[0][0],&p[1][0],&q[1][0],&p[2][0],&q[2][0],&p[3][0],&q[3][0]);
+#else
+    // add blur-VO constraint
+    // transform default col-major Eigen matrix to row-major, to form ceres::Grid2d
+    Eigen::Matrix<double,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> rowmajor_img = graph.state[head+2].img_data[calc_level];
+    ceres::Grid2D<double,1> array(rowmajor_img.data(),0,rowmajor_img.rows(),0,rowmajor_img.cols());
+    ceres::BiCubicInterpolator< ceres::Grid2D<double,1> > interpolator(array);
+
+    // blur-vo functor
     cost_function = new ceres::AutoDiffCostFunction<blur_vo_functor, 1, 3,4,3,4,3,4,3,4>
                         (
                          new blur_vo_functor(
                                              graph.state[head+1].img_data[calc_level],graph.state[head+1].depth[calc_level],interpolator,
                                              graph.state[head+1].img_data[calc_level].rows(),graph.state[head+1].img_data[calc_level].cols(),
-                                             cali.fx[2], cali.fy[2], cali.cx[2], cali.cy[2],
+                                             cali.fx[calc_level], cali.fy[calc_level], cali.cx[calc_level], cali.cy[calc_level],
                                              cali.exposure_time/deltaT
                                             )
                         );
     problem.AddResidualBlock(cost_function,NULL, &p[0][0],&q[0][0],&p[1][0],&q[1][0],&p[2][0],&q[2][0],&p[3][0],&q[3][0]);
+#endif
 
 
     // solving
     ceres::Solver::Options options;
     options.minimizer_progress_to_stdout = true;
+    options.max_num_iterations = 7;
     options.line_search_sufficient_function_decrease = 1e-4;
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
@@ -639,7 +823,7 @@ void ceres_solve(int head)
 
 // can only update pose [head, head+1, head+2, head+3]
 // and velocity (head+2)    -> head+2 use the last ts<head+2 to approximate
-void update_output_result(int head)
+void update_output_result(int head, Eigen::MatrixXd& est_img)
 {
     // update to graph
     for (int i=0;i<4;i++)
@@ -672,6 +856,10 @@ void update_output_result(int head)
 
     // output result to file
     double diff = 0.001;  // 1ms intepolate
+    double exposure_begin_stamp = graph.state[head+2].stamp - cali.exposure_time;
+    Eigen::MatrixXd AI_cnt;
+    est_img = Eigen::MatrixXd::Zero(cali.height[calc_level],cali.width[calc_level]);
+    AI_cnt = Eigen::MatrixXd::Zero(cali.height[calc_level],cali.width[calc_level]);
 
     Sophus::SE3d RTl0 = SE3_vec[0];
     for (double ts=graph.state[head+1].stamp;ts<graph.state[head+2].stamp;ts+=diff)
@@ -771,12 +959,106 @@ void update_output_result(int head)
         fprintf(solve_acc_file,"%lf %lf %lf %lf\n",
                                 ts,spline_acc(0),spline_acc(1),spline_acc(2)
                );
+
+        // --- generate est img ---
+        if (ts>=exposure_begin_stamp)
+        {
+            Sophus::SE3d SE3_j(R,T);
+            // SE(3)_i^j = ( SE(3)_j^0 )^-1 * SE(3)_i^0
+            Sophus::SE3d SE3_i_2_j = SE3_j.inverse() * SE3_vec[1];
+
+            int height,width;
+            height = cali.height[calc_level];
+            width = cali.width[calc_level];
+            for (int v=1;v<height-1;v++)
+                for (int u=1;u<width-1;u++)
+                {
+                    Eigen::Matrix<double,3,1> p_ref,p_cur;  // [x,y,z]
+                    double lambda;
+                    lambda = graph.state[head+1].depth[calc_level](v,u);
+
+                    if (double_equ_check(lambda,0.0,DOUBLE_EPS)<=0) // no depth
+                        continue;
+
+                    p_ref[0] = (u-cali.cx[calc_level])/cali.fx[calc_level] * lambda;
+                    p_ref[1] = (v-cali.cy[calc_level])/cali.fy[calc_level] * lambda;
+                    p_ref[2] = lambda;
+
+                    p_cur = SE3_i_2_j * p_ref;
+
+                    double u_new,v_new;
+                    u_new = (p_cur[0]/p_cur[2]) * cali.fx[calc_level] + cali.cx[calc_level];
+                    v_new = (p_cur[1]/p_cur[2]) * cali.fy[calc_level] + cali.cy[calc_level];
+
+                    if (u_new < 1 || u_new >= width-1 || v_new < 1 || v_new >= height-1)
+                        continue;
+
+                    int iv,iu;
+                    iv = v_new;
+                    iu = u_new;
+
+                    est_img(iv,iu) = est_img(iv,iu) + graph.state[head+1].img_data[calc_level](v,u);
+                    AI_cnt(iv,iu) = AI_cnt(iv,iu) + 1.0;
+                }
+        }
     }
 
     graph.state[head+2].v = last_linear_vel;
+
+    int height,width;
+    height = cali.height[calc_level];
+    width = cali.width[calc_level];
+
+#ifdef UNBLUR
+    est_img = Eigen::MatrixXd::Zero(cali.height[calc_level],cali.width[calc_level]);
+    AI_cnt = Eigen::MatrixXd::Zero(cali.height[calc_level],cali.width[calc_level]);
+
+    // SE(3)_i^j = ( SE(3)_j^0 )^-1 * SE(3)_i^0
+    Sophus::SE3d SE3_i_2_j = SE3_vec[2].inverse() * SE3_vec[1];
+    for (int v=1;v<height-1;v++)
+        for (int u=1;u<width-1;u++)
+        {
+            Eigen::Matrix<double,3,1> p_ref,p_cur;  // [x,y,z]
+            double lambda;
+            lambda = graph.state[head+1].depth[calc_level](v,u);
+
+            if (double_equ_check(lambda,0.0,DOUBLE_EPS)<=0) // no depth
+                continue;
+
+            p_ref[0] = (u-cali.cx[calc_level])/cali.fx[calc_level] * lambda;
+            p_ref[1] = (v-cali.cy[calc_level])/cali.fy[calc_level] * lambda;
+            p_ref[2] = lambda;
+
+            p_cur = SE3_i_2_j * p_ref;
+
+            double u_new,v_new;
+            u_new = (p_cur[0]/p_cur[2]) * cali.fx[calc_level] + cali.cx[calc_level];
+            v_new = (p_cur[1]/p_cur[2]) * cali.fy[calc_level] + cali.cy[calc_level];
+
+            if (u_new < 1 || u_new >= width-1 || v_new < 1 || v_new >= height-1)
+                continue;
+
+            int iv,iu;
+            iv = v_new;
+            iu = u_new;
+
+            est_img(iv,iu) = est_img(iv,iu) + graph.state[head+1].img_data[calc_level](v,u);
+            AI_cnt(iv,iu) = AI_cnt(iv,iu) + 1.0;
+        }
+#endif
+
+    // generate img
+    for (int v=0;v<height;v++)
+        for (int u=0;u<width;u++)
+        {
+            if (double_equ_check(AI_cnt(v,u),0.0,DOUBLE_EPS)<=0)
+                est_img(v,u) = 0.0;
+            else
+                est_img(v,u) = est_img(v,u) / AI_cnt(v,u);
+        }
 }
 
-void ceres_process(int head)
+void ceres_process(int head, Eigen::MatrixXd& est_img)
 {
     SE3_vec.clear();
     for (int i=head;i<head+4;i++)
@@ -788,5 +1070,5 @@ void ceres_process(int head)
     ceres_solve(head);
 
     // ---- output to file ----
-    update_output_result(head);
+    update_output_result(head,est_img);
 }

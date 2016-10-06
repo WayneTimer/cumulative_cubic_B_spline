@@ -124,7 +124,6 @@ void pyr_down(State& state,int level)
     h = cali.height[level];
     state.img_data[level] = Eigen::MatrixXd::Zero(h,w);
     state.depth[level] = Eigen::MatrixXd::Zero(h,w);
-    printf("pyrdown: %d x %d\n",w,h);
 
     for (int u=0;u<w;u++)
         for (int v=0;v<h;v++)
@@ -397,7 +396,6 @@ void real_data(State& state)
 
             last_imu_stamp = imu_t;
         }
-        printf("DeltaT = %lf\n",DeltaT);
         pk1 = graph.state[last_no].p 
             + graph.state[last_no].q.toRotationMatrix()*graph.state[last_no].v*DeltaT
             + graph.state[last_no].q.toRotationMatrix()*alpha; // g0 has already removed
@@ -420,8 +418,24 @@ void update_state(int head)
         * (graph.state[last_no].v + beta);  // g0 has already removed
 }
 
+void ros_publish(ros::Publisher& pub_origin, ros::Publisher& pub_est, int idx, Eigen::MatrixXd& est_img)
+{
+    // 1. ----- pub grey img -----
+    cv::Mat origin_img = cv::Mat::zeros(graph.state[idx].img_data[calc_level].rows(),graph.state[idx].img_data[calc_level].cols(),CV_8UC1);
+    for (int u=0;u<graph.state[idx].img_data[calc_level].rows();u++)
+        for (int v=0;v<graph.state[idx].img_data[calc_level].cols();v++)
+            origin_img.at<uchar>(u,v) = graph.state[idx].img_data[calc_level](u,v);
+    pub_origin.publish(img2msg(origin_img,graph.state[idx].ros_stamp,sensor_msgs::image_encodings::MONO8));
+    // 2. ----- pub est blur img -----
+    cv::Mat blur_img = cv::Mat::zeros(est_img.rows(),est_img.cols(),CV_8UC1);
+    for (int u=0;u<est_img.rows();u++)
+        for (int v=0;v<est_img.cols();v++)
+            blur_img.at<uchar>(u,v) = est_img(u,v);
+    pub_est.publish(img2msg(blur_img,graph.state[idx].ros_stamp,sensor_msgs::image_encodings::MONO8));
+}
+
 // ensure there is enough msg
-void process()
+void process(ros::Publisher& pub_origin, ros::Publisher& pub_est)
 {
     start_time_stamp = img1_buffer.front().header.stamp;  // ensure img1_buffer & disp_buffer are totally the same
 
@@ -440,10 +454,16 @@ void process()
     while (!img1_buffer.empty() || !disp_buffer.empty() || !imu_buffer.empty())
     {
         State state;
+        Eigen::MatrixXd est_img;
+
         real_data(state);
         graph.state.push_back(state);
-        ceres_process(head);
+        ceres_process(head,est_img);
         update_state(head);  // B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s v
+
+        ros_publish(pub_origin,pub_est,head+2,est_img);
+        printf("Frame %d (stamp: %.3lf) optimized done.\n",head+2,graph.state[head+2].stamp);
+
         head++;
     }
 }
@@ -482,7 +502,7 @@ int main(int argc, char **argv)
 
     mtx.lock();
 
-    process();
+    process(pub_img,pub_estimated_img);
 
     mtx.unlock();
 

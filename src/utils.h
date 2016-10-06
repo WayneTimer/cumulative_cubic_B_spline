@@ -3,11 +3,17 @@
 
 #include <opencv2/opencv.hpp>
 #include <eigen3/Eigen/Dense>
+#include <string>
+#include <sensor_msgs/Image.h>
+#include <ros/ros.h>
+
+using namespace std;
 
 int double_equ_check(double x,double y,double eps);
 Eigen::Vector3d R_to_ypr(const Eigen::Matrix3d& R);
 Eigen::Matrix3d ypr_to_R(const Eigen::Vector3d& theta);
 int cal_depth_img(cv::Mat& disparity,Eigen::MatrixXd& depth,double baseline,double f);
+sensor_msgs::Image img2msg(cv::Mat& img, ros::Time& ros_stamp, string encoding);
 
 template <typename T>
 Eigen::Matrix<T,3,3> skew(const Eigen::Matrix<T,3,1>& A)
