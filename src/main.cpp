@@ -48,6 +48,7 @@ Eigen::Vector3d g0,initial_omega_bias;
 ros::Time start_time_stamp;
 double last_imu_stamp;
 int calc_level;
+int key_frame_no;
 
 void ros_pub_points(State& state, ros::Publisher& pub_pc2, ros::Time& ros_stamp)
 {
@@ -213,6 +214,8 @@ void init()
 
     path.header.frame_id = "world";
     path.poses.clear();
+
+    key_frame_no = 0;
 }
 
 void get_stationary_imu()
@@ -418,7 +421,7 @@ void update_state(int head)
         * (graph.state[last_no].v + beta);  // g0 has already removed
 }
 
-void ros_publish(ros::Publisher& pub_origin, ros::Publisher& pub_est, int idx, Eigen::MatrixXd& est_img)
+void ros_publish(ros::Publisher& pub_origin, ros::Publisher& pub_est, int idx, Eigen::MatrixXd& est_img, ros::Publisher& pub_pc2)
 {
     // 1. ----- pub grey img -----
     cv::Mat origin_img = cv::Mat::zeros(graph.state[idx].img_data[calc_level].rows(),graph.state[idx].img_data[calc_level].cols(),CV_8UC1);
@@ -432,10 +435,12 @@ void ros_publish(ros::Publisher& pub_origin, ros::Publisher& pub_est, int idx, E
         for (int v=0;v<est_img.cols();v++)
             blur_img.at<uchar>(u,v) = est_img(u,v);
     pub_est.publish(img2msg(blur_img,graph.state[idx].ros_stamp,sensor_msgs::image_encodings::MONO8));
+    // 3. ----- pub point clouds -----
+    ros_pub_points(graph.state[idx],pub_pc2,graph.state[idx].ros_stamp);
 }
 
 // ensure there is enough msg
-void process(ros::Publisher& pub_origin, ros::Publisher& pub_est)
+void process(ros::Publisher& pub_origin, ros::Publisher& pub_est, ros::Publisher& pub_pc2)
 {
     start_time_stamp = img1_buffer.front().header.stamp;  // ensure img1_buffer & disp_buffer are totally the same
 
@@ -461,7 +466,7 @@ void process(ros::Publisher& pub_origin, ros::Publisher& pub_est)
         ceres_process(head,est_img);
         update_state(head);  // B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s v
 
-        ros_publish(pub_origin,pub_est,head+2,est_img);
+        ros_publish(pub_origin,pub_est,head+2,est_img,pub_pc2);
         printf("Frame %d (stamp: %.3lf) optimized done.\n",head+2,graph.state[head+2].stamp);
 
         head++;
@@ -502,7 +507,7 @@ int main(int argc, char **argv)
 
     mtx.lock();
 
-    process(pub_img,pub_estimated_img);
+    process(pub_img,pub_estimated_img,pub_pc2);
 
     mtx.unlock();
 

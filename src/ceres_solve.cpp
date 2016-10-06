@@ -19,9 +19,9 @@ using namespace std;
 #endif
 
 #define BLUR_WEIGHT 0.0001
-#define PRIOR_WEIGHT 0.0001
-#define ACC_WEIGHT 0.5
-#define OMEGA_WEIGHT 1.0
+#define PRIOR_WEIGHT 0.00001
+#define ACC_WEIGHT 0.001
+#define OMEGA_WEIGHT 0.02
 #define INTERPOLATE_DIFF 0.01
 
 extern Graph graph;
@@ -33,6 +33,7 @@ extern FILE *solve_omega_file;  // Solved B-spline': ts \omega
 extern FILE *solve_vel_file;  // Solved B-spline': ts vel
 extern FILE *solve_acc_file;  // Solved B-spline'': ts acc
 extern int calc_level;
+extern int key_frame_no;
 
 /*
 B-Spline's SE(3) = (R_i^0,T_i^0) = SE(3)_i^0
@@ -257,6 +258,7 @@ private:
     double exposure_time_u;  // in u domain
     const Eigen::MatrixXd& key_frame_img;
     const Eigen::MatrixXd& key_frame_depth;
+    int ref_u,ref_v; // v - height, u - width
 
 public:
     dvo_functor(
@@ -264,13 +266,15 @@ public:
                     const Eigen::MatrixXd& _key_frame_depth,
                     const ceres::BiCubicInterpolator< ceres::Grid2D<double,1> >& _img,
                     int _height, int _width,
-                    double _fx, double _fy, double _cx, double _cy, double _exposure_time_u) :
+                    double _fx, double _fy, double _cx, double _cy, double _exposure_time_u,
+                    int _ref_u, int _ref_v
+               ) :
                     key_frame_img(_key_frame_img),
                     key_frame_depth(_key_frame_depth),
                     img(_img),
                     height(_height), width(_width),
-                    fx(_fx), fy(_fy), cx(_cx), cy(_cy), exposure_time_u(_exposure_time_u
-                   )
+                    fx(_fx), fy(_fy), cx(_cx), cy(_cy), exposure_time_u(_exposure_time_u),
+                    ref_u(_ref_u), ref_v(_ref_v)
     {}
 
     template <typename T>
@@ -281,16 +285,13 @@ public:
 
                      // no need to give img stamp - ts(already delayed), and exposure period [ts-EXP, ts), in u
                      // is always 1.0
+                     const T* const key_frame_RT,
 
                      T* residual) const
     {
-        vector<Eigen::Matrix<T,4,4> > A,dA;
-        A.resize(4);
-        dA.resize(4);
-
         // ========  construct SE3 ===========
         vector<Sophus::SE3Group<T> > SE3;
-        SE3.resize(4);
+        SE3.resize(3);
 
         Eigen::Matrix<T,3,1> translation;
         Eigen::Quaternion<T> quat;  // Eigen::Quaternion (w,x,y,z)
@@ -312,83 +313,65 @@ public:
         translation[2] = p2[2];
         quat = Eigen::Quaternion<T>(q2[3],q2[0],q2[1],q2[2]);
         SE3[2] = Sophus::SE3Group<T>(quat.toRotationMatrix(),translation);
-
-        translation[0] = p3[0];
-        translation[1] = p3[1];
-        translation[2] = p3[2];
-        quat = Eigen::Quaternion<T>(q3[3],q3[0],q3[1],q3[2]);
-        SE3[3] = Sophus::SE3Group<T>(quat.toRotationMatrix(),translation);
         // ===============================
 
-        Sophus::SE3Group<T> RTl0 = SE3[0];
-
-        // ---- construct B ----
-        Eigen::Matrix<T,4,4> B;
-        B.setZero();
-        B(0,0) = T(6.0);
-        B(1,0) = T(5.0);
-        B(1,1) = T(3.0);
-        B(1,2) = T(-3.0);
-        B(1,3) = T(1.0);
-        B(2,0) = T(1.0);
-        B(2,1) = T(3.0);
-        B(2,2) = T(3.0);
-        B(2,3) = T(-2.0);
-        B(3,3) = T(1.0);
-
-        Eigen::Matrix<T,4,4> tmp_B;
-        tmp_B = T(1.0/6.0) * B;
-        B = tmp_B;
-        // --------------------
+        // --- get key-frame RT ---
+        Sophus::SE3Group<T> key_frame_SE3;  // (R,T)_i^0
+        translation[0] = key_frame_RT[0];
+        translation[1] = key_frame_RT[1];
+        translation[2] = key_frame_RT[2];
+        quat = Eigen::Quaternion<T>(key_frame_RT[6],key_frame_RT[3],key_frame_RT[4],key_frame_RT[5]);
+        key_frame_SE3 = Sophus::SE3Group<T>(quat.toRotationMatrix(),translation);
+        // -------
 
         // ===== generate dense img =====
         residual[0] = T(0.0);
 
-        for (int v=1;v<height-1;v++)
-            for (int u=1;u<width-1;u++)
-            {
-                // SE(3)_i^j = ( SE(3)_j^0 )^-1 * SE(3)_i^0
-                Sophus::SE3Group<T> SE3_i_2_j = SE3[2].inverse() * SE3[1];
+        int v = ref_v;
+        int u = ref_u;
 
-                Eigen::Matrix<T,3,1> p_ref,p_cur;  // [x,y,z]
-                double lambda;
-                lambda = key_frame_depth(v,u);
+        // SE(3)_i^j = ( SE(3)_j^0 )^-1 * SE(3)_i^0
+        Sophus::SE3Group<T> SE3_i_2_j = SE3[2].inverse() * key_frame_SE3;
 
-                if (double_equ_check(lambda,0.0,DOUBLE_EPS)<=0) // no depth
-                    continue;
+        Eigen::Matrix<T,3,1> p_ref,p_cur;  // [x,y,z]
+        double lambda;
+        lambda = key_frame_depth(v,u);
 
-                p_ref[0] = T( (u-cx)/fx * lambda );
-                p_ref[1] = T( (v-cy)/fy * lambda );
-                p_ref[2] = T( lambda );
+        if (double_equ_check(lambda,0.0,DOUBLE_EPS)<=0) // no depth
+            return true;
 
-                p_cur = SE3_i_2_j * p_ref;
+        p_ref[0] = T( (u-cx)/fx * lambda );
+        p_ref[1] = T( (v-cy)/fy * lambda );
+        p_ref[2] = T( lambda );
 
-                T u_new,v_new;
-                u_new = (p_cur[0]/p_cur[2]) * T(fx) + T(cx);
-                v_new = (p_cur[1]/p_cur[2]) * T(fy) + T(cy);
+        p_cur = SE3_i_2_j * p_ref;
 
-                if (u_new < T(1) || u_new >= T(width-1) || v_new < T(1) || v_new >= T(height-1) )
-                    continue;
+        T u_new,v_new;
+        u_new = (p_cur[0]/p_cur[2]) * T(fx) + T(cx);
+        v_new = (p_cur[1]/p_cur[2]) * T(fy) + T(cy);
 
-                T inten;
-                img.Evaluate(v_new,u_new,&inten);
+        if (u_new < T(1) || u_new >= T(width-1) || v_new < T(1) || v_new >= T(height-1) )
+            return true;
 
-                double inten_est;
-                inten_est = key_frame_img(v,u);
+        T inten;
+        img.Evaluate(v_new,u_new,&inten);
 
-                T resi = T(inten_est) - inten;
+        double inten_est;
+        inten_est = key_frame_img(v,u);
 
-                resi = resi*resi;
+        T resi = T(inten_est) - inten;
 
-                T resi_weight = T(1.0);
-                if (resi > T(25.0))  // 5.0 * 5.0
-                {
-                    resi_weight = T(25.0) / resi;
-                }
+        T resi_weight = T(1.0);
+        if ( resi > T(5.0) )
+        {
+            resi_weight = T(5.0) / resi;
+        }
+        if ( resi < T(-5.0) )
+        {
+            resi_weight = T(-5.0) / resi;
+        }
 
-                residual[0] = residual[0] + resi * resi_weight;
-            }
-        residual[0] = residual[0] * T(DVO_WEIGHT);
+        residual[0] = resi * resi_weight * T(DVO_WEIGHT);
 
         return true;
     }
@@ -696,7 +679,7 @@ void ceres_solve(int head)
     double q0[4][4];
     ceres::LocalParameterization *local_parameterization = new ceres_ext::EigenQuaternionParameterization();
 
-    // add prior constraint
+    // prepare prior constraint
     for (int i=0;i<4;i++)
     {
         Eigen::Vector3d trans = SE3_vec[i].translation();
@@ -710,10 +693,14 @@ void ceres_solve(int head)
         q0[i][0] = quat.x(), q0[i][1] = quat.y(), q0[i][2] = quat.z(), q0[i][3] = quat.w();  // q = {x,y,z,w}
         q[i][0] = quat.x(), q[i][1] = quat.y(), q[i][2] = quat.z(), q[i][3] = quat.w();
 
+        problem.AddParameterBlock(&q[i][0],4,local_parameterization);  // q = {x,y,z,w}
+    }
+    // only fix first state prior
+    for (int i=0;i<1;i++)
+    {
         cost_function = new ceres::AutoDiffCostFunction<prior_functor, 7, 3,4,3,4>(new prior_functor);
         problem.AddResidualBlock(cost_function,NULL,&p[i][0],&q[i][0],&p0[i][0],&q0[i][0]);
 
-        problem.AddParameterBlock(&q[i][0],4,local_parameterization);  // q = {x,y,z,w}
         problem.SetParameterBlockConstant(&p0[i][0]);
         problem.SetParameterBlockConstant(&q0[i][0]);
     }
@@ -754,21 +741,38 @@ void ceres_solve(int head)
 #ifdef UNBLUR
     // add blur-VO constraint
     // transform default col-major Eigen matrix to row-major, to form ceres::Grid2d
-    Eigen::Matrix<double,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> rowmajor_img = graph.state[head+2].img_data[calc_level];
+    Eigen::Matrix<double,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor> rowmajor_img = graph.state[head+2].img_data[calc_level];  // current frame
     ceres::Grid2D<double,1> array(rowmajor_img.data(),0,rowmajor_img.rows(),0,rowmajor_img.cols());
     ceres::BiCubicInterpolator< ceres::Grid2D<double,1> > interpolator(array);
 
+    double key_frame_RT[7];  // [p,q.x(),q.y(),q.z(),q.w()]
+    key_frame_RT[0] = graph.state[key_frame_no].p[0];
+    key_frame_RT[1] = graph.state[key_frame_no].p[1];
+    key_frame_RT[2] = graph.state[key_frame_no].p[2];
+    key_frame_RT[3] = graph.state[key_frame_no].q.x();
+    key_frame_RT[4] = graph.state[key_frame_no].q.y();
+    key_frame_RT[5] = graph.state[key_frame_no].q.z();
+    key_frame_RT[6] = graph.state[key_frame_no].q.w();
+
     // dvo-functor
-    cost_function = new ceres::AutoDiffCostFunction<dvo_functor, 1, 3,4,3,4,3,4,3,4>
-                        (
-                         new dvo_functor(
-                                             graph.state[head+1].img_data[calc_level],graph.state[head+1].depth[calc_level],interpolator,
-                                             graph.state[head+1].img_data[calc_level].rows(),graph.state[head+1].img_data[calc_level].cols(),
-                                             cali.fx[calc_level], cali.fy[calc_level], cali.cx[calc_level], cali.cy[calc_level],
-                                             cali.exposure_time/deltaT
-                                            )
-                        );
-    problem.AddResidualBlock(cost_function,NULL, &p[0][0],&q[0][0],&p[1][0],&q[1][0],&p[2][0],&q[2][0],&p[3][0],&q[3][0]);
+    for (int v=1;v<graph.state[key_frame_no].img_data[calc_level].rows()-1;v++)
+        for (int u=1;u<graph.state[key_frame_no].img_data[calc_level].cols()-1;u++)
+        {
+            cost_function = new ceres::AutoDiffCostFunction<dvo_functor, 1, 3,4,3,4,3,4,3,4, 7>
+                                (
+                                 new dvo_functor(
+                                                     graph.state[key_frame_no].img_data[calc_level],graph.state[key_frame_no].depth[calc_level],interpolator,
+                                                     graph.state[key_frame_no].img_data[calc_level].rows(),graph.state[key_frame_no].img_data[calc_level].cols(),
+                                                     cali.fx[calc_level], cali.fy[calc_level], cali.cx[calc_level], cali.cy[calc_level],
+                                                     cali.exposure_time/deltaT,
+                                                     u,v
+                                                    )
+                                );
+            problem.AddResidualBlock(cost_function,NULL, &p[0][0],&q[0][0],&p[1][0],&q[1][0],&p[2][0],&q[2][0],&p[3][0],&q[3][0],
+                                                         key_frame_RT
+                                    );
+        }
+    problem.SetParameterBlockConstant(key_frame_RT);
 #else
     // add blur-VO constraint
     // transform default col-major Eigen matrix to row-major, to form ceres::Grid2d
@@ -1014,13 +1018,14 @@ void update_output_result(int head, Eigen::MatrixXd& est_img)
     AI_cnt = Eigen::MatrixXd::Zero(cali.height[calc_level],cali.width[calc_level]);
 
     // SE(3)_i^j = ( SE(3)_j^0 )^-1 * SE(3)_i^0
-    Sophus::SE3d SE3_i_2_j = SE3_vec[2].inverse() * SE3_vec[1];
+    Sophus::SE3d key_frame_SE3(graph.state[key_frame_no].q.toRotationMatrix(),graph.state[key_frame_no].p);
+    Sophus::SE3d SE3_i_2_j = SE3_vec[2].inverse() * key_frame_SE3;
     for (int v=1;v<height-1;v++)
         for (int u=1;u<width-1;u++)
         {
             Eigen::Matrix<double,3,1> p_ref,p_cur;  // [x,y,z]
             double lambda;
-            lambda = graph.state[head+1].depth[calc_level](v,u);
+            lambda = graph.state[key_frame_no].depth[calc_level](v,u);
 
             if (double_equ_check(lambda,0.0,DOUBLE_EPS)<=0) // no depth
                 continue;
@@ -1042,7 +1047,7 @@ void update_output_result(int head, Eigen::MatrixXd& est_img)
             iv = v_new;
             iu = u_new;
 
-            est_img(iv,iu) = est_img(iv,iu) + graph.state[head+1].img_data[calc_level](v,u);
+            est_img(iv,iu) = est_img(iv,iu) + graph.state[key_frame_no].img_data[calc_level](v,u);
             AI_cnt(iv,iu) = AI_cnt(iv,iu) + 1.0;
         }
 #endif
