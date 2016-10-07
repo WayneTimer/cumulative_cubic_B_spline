@@ -31,8 +31,8 @@ public:
     Eigen::Vector3d alpha; // alpha_k1^k, store in k+1 frame
     Eigen::Vector3d beta; // beta_k1^k, store in k+1 frame
     cv::Mat img; // key frame? img from camera : estimated img
-    Eigen::MatrixXd img_data[PYRDOWN_LEVEL]; // img from camera
-    Eigen::MatrixXd depth[PYRDOWN_LEVEL]; // SGBM from stereo camera
+    Eigen::MatrixXd img_data[PYRDOWN_LEVEL+1]; // img from camera
+    Eigen::MatrixXd depth[PYRDOWN_LEVEL+1]; // SGBM from stereo camera
     int depth_cnt; // cnt of (img depth > threshold)
     ros::Time ros_stamp;    // raw ros_stamp
     double stamp;  // (ros_stamp-start_time_stamp).toSec()
@@ -53,9 +53,9 @@ public:
 class CALI_PARA
 {
 public:
-    double fx[PYRDOWN_LEVEL],fy[PYRDOWN_LEVEL],cx[PYRDOWN_LEVEL],cy[PYRDOWN_LEVEL];
+    double fx[PYRDOWN_LEVEL+1],fy[PYRDOWN_LEVEL+1],cx[PYRDOWN_LEVEL+1],cy[PYRDOWN_LEVEL+1];
     double baseline;
-    int width[PYRDOWN_LEVEL],height[PYRDOWN_LEVEL];
+    int width[PYRDOWN_LEVEL+1],height[PYRDOWN_LEVEL+1];
     Eigen::Matrix3d R_I_2_C; // R_I^C
     Eigen::Vector3d T_I_2_C; // T_I^C
 

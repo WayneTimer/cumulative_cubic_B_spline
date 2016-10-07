@@ -42,6 +42,7 @@ FILE *solve_omega_file;  // Solved B-spline': ts \omega
 FILE *solve_vel_file;  // Solved B-spline': ts vel
 FILE *solve_acc_file;  // Solved B-spline'': ts acc
 FILE *debug_imu_file;  // IMU: ts acc \omega
+FILE *init_pose_file;  // Only IMU integration: ts p \theta
 double deltaT;       // eg: 20HZ img (50ms) -> 0.05
 nav_msgs::Path path;
 Eigen::Vector3d g0,initial_omega_bias;
@@ -188,6 +189,7 @@ void init()
     solve_vel_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_vel.txt","w");
     solve_acc_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_acc.txt","w");
     debug_imu_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/debug_imu.txt","w");
+    init_pose_file = fopen("/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/init_pose.txt","w");
 
     // === read config ===
     ros::NodeHandle nh("~");
@@ -299,7 +301,7 @@ void load_img_disp(State& state, cv::Mat &img)
         for (int v=0;v<img.cols;v++)
             state.img_data[0](u,v) = img.at<uchar>(u,v);
 
-    for (int level=0;level<PYRDOWN_LEVEL;level++)
+    for (int level=0;level<=PYRDOWN_LEVEL;level++)
     {
         pyr_down(state,level); // also pyr_down depth
     }
@@ -407,6 +409,12 @@ void real_data(State& state)
         qk1 = Eigen::Quaterniond(graph.state[last_no].q.toRotationMatrix() * R_k1_k);
         qk1.normalize();
     }
+    // ----- fprint state init -----
+    Eigen::Vector3d theta = R_to_ypr(state.q.toRotationMatrix());
+    fprintf(init_pose_file,"%lf %lf %lf %lf %lf %lf %lf\n",state.stamp,state.p[0],state.p[1],state.p[2],theta[0],theta[1],theta[2]);
+    fflush(init_pose_file);
+    printf("%lf %lf %lf %lf %lf %lf %lf\n",state.stamp,state.p[0],state.p[1],state.p[2],theta[0],theta[1],theta[2]);
+    // -----------
 }
 
 // B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s v
@@ -516,6 +524,7 @@ int main(int argc, char **argv)
     fclose(solve_vel_file);
     fclose(solve_acc_file);
     fclose(debug_imu_file);
+    fclose(init_pose_file);
 
     ros::shutdown();
 

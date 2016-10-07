@@ -47,6 +47,29 @@ plot(stamp,theta(:,3),'g');
 hold on;
 title('\theta_k^0 (2) - roll');
 
+%% plot B-spline pose
+init_pose_file = '/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/init_pose.txt';
+
+data = load(init_pose_file);
+
+stamp = data(:,1);
+p = data(:,2:4);
+theta = data(:,5:7);
+
+subplot(n,m,1);
+plot(stamp,p(:,1),'r');
+subplot(n,m,2);
+plot(stamp,p(:,2),'r');
+subplot(n,m,3);
+plot(stamp,p(:,3),'r');
+
+subplot(n,m,4);
+plot(stamp,theta(:,1),'r');
+subplot(n,m,5);
+plot(stamp,theta(:,2),'r');
+subplot(n,m,6);
+plot(stamp,theta(:,3),'r');
+
 %% plot B-spline first order derivative
 spline_vel_file = '/home/timer/catkin_ws/src/cumulative_cubic_B_spline/helper/matlab_src/B_spline_plot/solve_vel.txt';
 

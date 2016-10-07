@@ -2,7 +2,7 @@
 <launch>
     <node pkg="cumulative_cubic_B_spline" type="cumulative_cubic_B_spline" name="cumulative_cubic_B_spline" args="visensor" output="screen">
         <rosparam file="$(find cumulative_cubic_B_spline)/config/camchain-imucam-hometimerROS_bags2forcali.yaml" command="load" />
-        <param name="calc_level" value="2" />
+        <param name="calc_level" value="4" />  <!-- 3: 60 x 94-->
         <param name="exposure_time" value="0.01" />
         <param name="img_hz" value="20.0" />
     </node>

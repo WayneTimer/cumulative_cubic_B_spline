@@ -41,7 +41,7 @@ bool CALI_PARA::init(ros::NodeHandle& nh)
 
     // ---------
     // pyr_down: (fx,fy,cx,cy)
-    for (int level=1;level<PYRDOWN_LEVEL;level++)
+    for (int level=1;level<=PYRDOWN_LEVEL;level++)
     {
         fx[level] = fx[0] / (1<<level);
         fy[level] = fy[0] / (1<<level);
@@ -49,6 +49,7 @@ bool CALI_PARA::init(ros::NodeHandle& nh)
         cy[level] = (cy[0]+0.5) / (1<<level) - 0.5;
         width[level] = width[0] >> level;
         height[level] = height[0] >> level;
+        printf("lvl: %d,  %d x %d\n",level,height[level],width[level]);
     }
     return true;
 }
