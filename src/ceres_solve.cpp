@@ -16,7 +16,7 @@ using namespace std;
 
 #define DVO_WEIGHT 1.0
 
-#define BLUR_WEIGHT 0.01
+#define BLUR_WEIGHT 1.0
 #define PRIOR_WEIGHT 0.001
 #define ACC_WEIGHT 0.2
 #define OMEGA_WEIGHT 1.0
@@ -543,7 +543,6 @@ struct acc_functor
 
         Eigen::Matrix<T,3,1> spline_acc = R.transpose() * ddSE.template block<3,1>(0,3);  // ? g0 has been removed
 
-
         // ---- get residual ----
         residual[0] = (spline_acc(0,0) - imu_info[1]) * T(ACC_WEIGHT);
         residual[1] = (spline_acc(1,0) - imu_info[2]) * T(ACC_WEIGHT);
@@ -717,7 +716,7 @@ void ceres_solve(int head)
         problem.AddParameterBlock(&q[i][0],4,local_parameterization);  // q = {x,y,z,w}
     }
     // only fix first state prior
-    for (int i=0;i<3;i++)
+    for (int i=0;i<1;i++)
     {
         cost_function = new ceres::AutoDiffCostFunction<prior_functor, 7, 3,4,3,4>(new prior_functor);
         problem.AddResidualBlock(cost_function,NULL,&p[i][0],&q[i][0],&p0[i][0],&q0[i][0]);
