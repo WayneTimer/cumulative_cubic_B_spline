@@ -10,6 +10,7 @@
 
 using namespace std;
 
+#define PRIOR_WEIGHT 1.0
 #define ACC_WEIGHT 0.05
 #define OMEGA_WEIGHT 0.2
 
@@ -27,7 +28,7 @@ double omega_bias[3];
 vector<Eigen::Vector3d> acc_bias_vec;
 vector<Eigen::Vector3d> omega_bias_vec;
 
-struct vio_functor
+struct prior_functor
 {
     // first (p,q) -> to be optimized
     // last (p,q) -> constant (initial guess)
@@ -38,9 +39,9 @@ struct vio_functor
                      T* residual) const
     {
         for (int i=0;i<3;i++)
-            residual[i] = p[i] - p0[i];
+            residual[i] = (p[i] - p0[i]) * T(PRIOR_WEIGHT);
         for (int i=0;i<4;i++)
-            residual[3+i] = q[i] - q0[i];
+            residual[3+i] = (q[i] - q0[i]) * T(PRIOR_WEIGHT);
         return true;
     }
 };
@@ -331,7 +332,7 @@ void ceres_solve(int head)
     double q0[4][4];
     ceres::LocalParameterization *local_parameterization = new ceres_ext::EigenQuaternionParameterization();
 
-    // add vio constraint
+    // add prior (vio) constraint
     for (int i=0;i<4;i++)
     {
         Eigen::Vector3d T = new_SE3_vec[head+i].translation();
@@ -345,10 +346,14 @@ void ceres_solve(int head)
         q0[i][0] = quat.x(), q0[i][1] = quat.y(), q0[i][2] = quat.z(), q0[i][3] = quat.w();  // q = {x,y,z,w}
         q[i][0] = quat.x(), q[i][1] = quat.y(), q[i][2] = quat.z(), q[i][3] = quat.w();
 
-        cost_function = new ceres::AutoDiffCostFunction<vio_functor, 7, 3,4,3,4>(new vio_functor);
+        problem.AddParameterBlock(&q[i][0],4,local_parameterization);  // q = {x,y,z,w}
+    }
+    // only fix first state prior
+    for (int i=0;i<4;i++)
+    {
+        cost_function = new ceres::AutoDiffCostFunction<prior_functor, 7, 3,4,3,4>(new prior_functor);
         problem.AddResidualBlock(cost_function,NULL,&p[i][0],&q[i][0],&p0[i][0],&q0[i][0]);
 
-        problem.AddParameterBlock(&q[i][0],4,local_parameterization);  // q = {x,y,z,w}
         problem.SetParameterBlockConstant(&p0[i][0]);
         problem.SetParameterBlockConstant(&q0[i][0]);
     }
