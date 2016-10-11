@@ -23,6 +23,7 @@ backward::SignalHandling sh;
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/exact_time.h>
+#include <fstream>
 
 #include "utils.h"
 #include "ceres_solve.h"
@@ -330,6 +331,33 @@ void real_data(State& state)
         state.q.setIdentity();
         state.v.setZero();
         last_imu_stamp = 0.0;
+
+        // save first img & depth
+        cv::imwrite("/home/timer/catkin_ws/origin_key_frame_outputs/first_img.bmp",img);
+        ofstream fout;
+        fout.open("/home/timer/catkin_ws/origin_key_frame_outputs/depth_img.depth");
+        fout << state.depth[0] << endl;
+        fout.close();
+
+        // scale depth img to 0~255
+        double d_max,d_min;
+        d_max = state.depth[0](0,0);
+        d_min = d_max;
+        for (int u=0;u<cali.height[0];u++)
+            for (int v=0;v<cali.width[0];v++)
+            {
+                if (state.depth[0](u,v) > d_max)
+                    d_max = state.depth[0](u,v);
+                if (state.depth[0](u,v) < d_min)
+                    d_min = state.depth[0](u,v);
+            }
+        cv::Mat depth_img = cv::Mat::zeros(cali.height[0],cali.width[0],CV_8UC1);
+        for (int u=0;u<cali.height[0];u++)
+            for (int v=0;v<cali.width[0];v++)
+            {
+                depth_img.at<uchar>(u,v) = (uchar)((state.depth[0](u,v) - d_min) / d_max * 255.0);
+            }
+        cv::imwrite("/home/timer/catkin_ws/origin_key_frame_outputs/depth_img.bmp",depth_img);
     }
     else
     {
