@@ -25,6 +25,7 @@ backward::SignalHandling sh;
 #include <message_filters/sync_policies/exact_time.h>
 #include <fstream>
 
+#include "save_load_mesh/RendererService.h"
 #include "utils.h"
 #include "ceres_solve.h"
 #include "data_structure.h"
@@ -152,6 +153,16 @@ void pyr_down(State& state,int level)
         }
 }
 
+void cam_info_callback(const sensor_msgs::CameraInfoConstPtr& msg)
+{
+    if (cali.inited) return;
+    cali.inited = cali.init(msg);
+    if (cali.inited)
+        cali.view();
+    else
+        ROS_ERROR("Error in cali.init() !");
+}
+
 void vision_callback(
     const sensor_msgs::ImageConstPtr& msg_img_l,
     const stereo_msgs::DisparityImageConstPtr& msg_disp)
@@ -195,11 +206,6 @@ void init()
     // === read config ===
     ros::NodeHandle nh("~");
 
-    if (!cali.init(nh))
-    {
-        ROS_ERROR("cali init error!");
-        exit(1);
-    }
     if (
         !nh.getParam("calc_level",calc_level) ||
         !nh.getParam("exposure_time",cali.exposure_time) ||
@@ -209,7 +215,6 @@ void init()
             puts("Can not read param from .launch !");
         }
     deltaT = 1.0/cali.img_hz;
-    cali.view();
 
     while (!imu_buffer.empty()) imu_buffer.pop();
     while (!img1_buffer.empty()) img1_buffer.pop();
@@ -457,7 +462,7 @@ void update_state(int head)
         * (graph.state[last_no].v + beta);  // g0 has already removed
 }
 
-void ros_publish(ros::Publisher& pub_origin, ros::Publisher& pub_est, int idx, Eigen::MatrixXd& est_img, ros::Publisher& pub_pc2)
+void ros_publish(ros::Publisher& pub_origin, ros::Publisher& pub_est, int idx, Eigen::MatrixXd& est_img, ros::Publisher& pub_pc2, ros::Publisher& pub_model_img)
 {
     // 1. ----- pub grey img -----
     cv::Mat origin_img = cv::Mat::zeros(graph.state[idx].img_data[calc_level].rows(),graph.state[idx].img_data[calc_level].cols(),CV_8UC1);
@@ -473,10 +478,32 @@ void ros_publish(ros::Publisher& pub_origin, ros::Publisher& pub_est, int idx, E
     pub_est.publish(img2msg(blur_img,graph.state[idx].ros_stamp,sensor_msgs::image_encodings::MONO8));
     // 3. ----- pub point clouds -----
     ros_pub_points(graph.state[idx],pub_pc2,graph.state[idx].ros_stamp);
+    // 4. ----- call mapper service and publish model image -----
+    ros::NodeHandle nh;
+    ros::ServiceClient client = nh.serviceClient<save_load_mesh::RendererService>("/gl_viewer/mapper_renderer");
+    save_load_mesh::RendererService srv;
+    srv.request.pose_stamped.header.stamp = graph.state[idx].ros_stamp;
+    srv.request.pose_stamped.pose.position.x = graph.state[idx].p[0];
+    srv.request.pose_stamped.pose.position.y = graph.state[idx].p[1];
+    srv.request.pose_stamped.pose.position.z = graph.state[idx].p[2];
+    srv.request.pose_stamped.pose.orientation.x = graph.state[idx].q.x();
+    srv.request.pose_stamped.pose.orientation.y = graph.state[idx].q.y();
+    srv.request.pose_stamped.pose.orientation.z = graph.state[idx].q.z();
+    srv.request.pose_stamped.pose.orientation.w = graph.state[idx].q.w();
+
+    if (client.call(srv))
+    {
+        ROS_INFO("Call mapper service succeed.");
+        pub_model_img.publish(srv.response.image);
+    }
+    else
+    {
+        ROS_ERROR("Call mapper service failed.");
+    }
 }
 
 // ensure there is enough msg
-void process(ros::Publisher& pub_origin, ros::Publisher& pub_est, ros::Publisher& pub_pc2)
+void process(ros::Publisher& pub_origin, ros::Publisher& pub_est, ros::Publisher& pub_pc2, ros::Publisher& pub_model_img)
 {
     start_time_stamp = img1_buffer.front().header.stamp;  // ensure img1_buffer & disp_buffer are totally the same
 
@@ -502,7 +529,7 @@ void process(ros::Publisher& pub_origin, ros::Publisher& pub_est, ros::Publisher
         ceres_process(head,est_img);
         update_state(head);  // B-spline can only update (head+2) velocity, so need to re-propogate (head+3)'s v
 
-        ros_publish(pub_origin,pub_est,head+2,est_img,pub_pc2);
+        ros_publish(pub_origin,pub_est,head+2,est_img,pub_pc2,pub_model_img);
         printf("Frame %d (stamp: %.3lf) optimized done.\n",head+2,graph.state[head+2].stamp);
 
         head++;
@@ -523,10 +550,12 @@ int main(int argc, char **argv)
     ros::Publisher pub_pixel_with_depth = nh.advertise<sensor_msgs::Image>("pixel_with_depth",1000);  // key frame with depth (green pixel)
     ros::Publisher pub_keyframe = nh.advertise<sensor_msgs::Image>("key_frame",1000);  // key frame
     ros::Publisher pub_estimated_img = nh.advertise<sensor_msgs::Image>("est_img",1000);  // est cur frame
+    ros::Publisher pub_model_img = nh.advertise<sensor_msgs::Image>("model_img",1000);  // image from model
 
     init();
 
     // ---- sync subscribe ----
+    ros::Subscriber sub_cam_info = nh.subscribe("/cam1/camera_info",10,cam_info_callback);  // 20HZ (same as cam)
     ros::Subscriber sub_imu = nh.subscribe("/imu0",1000,imu_callback);  // 200HZ (5ms)
     message_filters::Subscriber<sensor_msgs::Image> sub_img_l(nh,"/left/image_rect",1000);  // 20HZ (50ms)
     message_filters::Subscriber<stereo_msgs::DisparityImage> sub_disp(nh,"/disparity",1000);
@@ -538,12 +567,17 @@ int main(int argc, char **argv)
     boost::thread th1(spin_thread);
 
     getchar();  // Plan A: read all msg, then begin to process
+    if (cali.inited)
+    {
+        sub_cam_info.shutdown();
+        ROS_INFO("sub_cam_info shutdown.");
+    }
 
     get_stationary_imu();
 
     mtx.lock();
 
-    process(pub_img,pub_estimated_img,pub_pc2);
+    process(pub_img,pub_estimated_img,pub_pc2,pub_model_img);
 
     mtx.unlock();
 

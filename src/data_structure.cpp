@@ -17,8 +17,15 @@ Graph::Graph()
     state.clear();
 }
 
-bool CALI_PARA::init(ros::NodeHandle& nh)
+CALI_PARA::CALI_PARA()
 {
+    inited = false;
+}
+
+bool CALI_PARA::init(const sensor_msgs::CameraInfoConstPtr& msg)
+{
+    ros::NodeHandle nh("~");
+
     // read from kalibr result
     XmlRpc::XmlRpcValue res;
     if (!nh.getParam("cam1",res))
@@ -26,12 +33,12 @@ bool CALI_PARA::init(ros::NodeHandle& nh)
         puts("Can not get XmlRpcValue");
         return false;
     }
-    width[0] = res["resolution"][0];
-    height[0] = res["resolution"][1];
-    fx[0] = res["intrinsics"][0];
-    fy[0] = res["intrinsics"][1];
-    cx[0] = res["intrinsics"][2];
-    cy[0] = res["intrinsics"][3];
+    width[0] = msg->width;
+    height[0] = msg->height;
+    fx[0] = msg->P[0];
+    fy[0] = msg->P[5];
+    cx[0] = msg->P[2];
+    cy[0] = msg->P[6];
     baseline = res["T_cn_cnm1"][0][3];
     for (int i=0;i<3;i++)
         for (int j=0;j<3;j++)

@@ -5,6 +5,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <eigen3/Eigen/Dense>
 #include <ros/ros.h>
+#include <sensor_msgs/CameraInfo.h>
 
 #include "parameters.h"
 
@@ -61,8 +62,11 @@ public:
 
     double exposure_time; // exposure_time in second
     int img_hz;
+    bool inited;
 
-    bool init(ros::NodeHandle& nh);
+    CALI_PARA();    
+
+    bool init(const sensor_msgs::CameraInfoConstPtr& msg);
     void view();
 };
 #endif
