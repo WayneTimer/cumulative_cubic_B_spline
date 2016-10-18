@@ -555,7 +555,7 @@ int main(int argc, char **argv)
     init();
 
     // ---- sync subscribe ----
-    ros::Subscriber sub_cam_info = nh.subscribe("/cam1/camera_info",10,cam_info_callback);  // 20HZ (same as cam)
+    ros::Subscriber sub_cam_info = nh.subscribe("/my_cam1/camera_info",10,cam_info_callback);  // 20HZ (same as cam)
     ros::Subscriber sub_imu = nh.subscribe("/imu0",1000,imu_callback);  // 200HZ (5ms)
     message_filters::Subscriber<sensor_msgs::Image> sub_img_l(nh,"/left/image_rect",1000);  // 20HZ (50ms)
     message_filters::Subscriber<stereo_msgs::DisparityImage> sub_disp(nh,"/disparity",1000);

@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="ISO-8859-15"?>
 <launch>
+
+    <include file="$(find image_processing)/launch/visensor.launch" />
+
     <node pkg="cumulative_cubic_B_spline" type="cumulative_cubic_B_spline" name="cumulative_cubic_B_spline" args="visensor" output="screen">
         <rosparam file="$(find cumulative_cubic_B_spline)/config/camchain-imucam-hometimerROS_bags2forcali.yaml" command="load" />
         <param name="calc_level" value="2" />  <!-- 2: 120 x 188  ,    3: 60 x 94-->
@@ -7,16 +10,4 @@
         <param name="img_hz" value="20.0" />
     </node>
 
-    <node ns="/" name="stereo_image_proc" pkg="stereo_image_proc" type="stereo_image_proc" clear_params="true" output="screen">
-        <remap from="/left/image_raw" to="/cam1/image_raw" />
-        <remap from="/left/camera_info" to="/cam1/camera_info" />
-        <remap from="/right/image_raw" to="/cam0/image_raw" />
-        <remap from="/right/camera_info" to="/cam0/camera_info" />
-          <param name="queue_size" value="200000" />
-          <param name="disparity_range" value="64" />
-          <param name="stereo_algorithm" value="1" />  <!-- 0-BM, 1-SGBM -->
-    </node>
-    <node  name="disp_view" pkg="image_view" type="disparity_view" clear_params="true" output="screen">
-        <remap from="image" to="disparity" />
-    </node> 
 </launch>
