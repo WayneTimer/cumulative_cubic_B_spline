@@ -1,15 +1,8 @@
-# cumulative_cubic_B_spline
+# Cumulative Cubic B-Spline
 
-1. Cumulative cubic B-spline fitting done.
+This is an open source implementation of **Cumulative Cubic B-Spline** (Related paper: *A spline-based trajectory representation for sensor fusion and rolling shutter cameras*)
 
-TODO: (Ceres AD)  
-1. Ceres:  
-    QT VINS + IMU  
-2. Ceres:  [Keyframe-based]  
-    dense VIO + IMU  
-3. Ceres:  [Keyframe-based]  
-    dense VO (IMU initial guess) + IMU  
-4. Ceres:  [Keyframe-based]  
-    dense blur VO (IMU initial guess) + IMU  
-5. Ceres:  [Model-based]  
-    Model-based instead of above three
+<img src="demo.gif" width = 90% div align=center />
+
+# Run the demo
+`roslaunch cumulative_cubic_B_spline demo.launch`

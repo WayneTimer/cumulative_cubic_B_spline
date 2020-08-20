@@ -2,7 +2,6 @@
 #define data_structure_h
 
 #include <vector>
-#include <cv_bridge/cv_bridge.h>
 #include <eigen3/Eigen/Dense>
 #include <ros/ros.h>
 #include <sensor_msgs/CameraInfo.h>

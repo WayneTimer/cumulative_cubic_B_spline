@@ -53,6 +53,15 @@ double last_imu_stamp;
 int calc_level;
 int key_frame_no;
 
+sensor_msgs::Image img2msg(cv::Mat& img, ros::Time& ros_stamp, string encoding)
+{
+    cv_bridge::CvImage cvimg;
+    cvimg.header.stamp = ros_stamp;
+    cvimg.encoding = encoding;
+    cvimg.image = img;
+    return *cvimg.toImageMsg();
+}
+
 void ros_pub_points(State& state, ros::Publisher& pub_pc2, ros::Time& ros_stamp)
 {
     int w,h,level;

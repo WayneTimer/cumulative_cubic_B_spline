@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="ISO-8859-15"?>
+<launch>
+
+    <node pkg="rviz" type="rviz" name="rviz_vis" args="-d $(find cumulative_cubic_B_spline)/config/demo.rviz" />
+    <node pkg="cumulative_cubic_B_spline" type="demo" name="demo" output="screen" />
+
+</launch>

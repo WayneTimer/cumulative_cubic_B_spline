@@ -1,5 +1,4 @@
 #include "utils.h"
-#include <cv_bridge/cv_bridge.h>
 
 // 0:equ, -1:left<right, 1:left>right
 int double_equ_check(double x,double y,double eps)
@@ -75,13 +74,4 @@ int cal_depth_img(cv::Mat& disparity,Eigen::MatrixXd& depth,double baseline,doub
             }
         }
     return depth_cnt;
-}
-
-sensor_msgs::Image img2msg(cv::Mat& img, ros::Time& ros_stamp, string encoding)
-{
-    cv_bridge::CvImage cvimg;
-    cvimg.header.stamp = ros_stamp;
-    cvimg.encoding = encoding;
-    cvimg.image = img;
-    return *cvimg.toImageMsg();
 }

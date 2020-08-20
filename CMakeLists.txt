@@ -23,21 +23,26 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   std_msgs
-  image_transport
-  cv_bridge
+  rviz_visual_tools
+  #image_transport
+  #cv_bridge
 )
 
+find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(Ceres REQUIRED)
 
 catkin_package()
 
 include_directories(
   ${catkin_INCLUDE_DIRS}
-  /usr/include/eigen3/  # a temp solution to support <unsupported/Eigen> (they has "include <Eigen/...>" but not "<eigen3/Eigen/...>")
   ${PROJECT_SOURCE_DIR}/include/thirdparty/
   ${CERES_INCLUDE_DIRS}
 )
 
-add_executable(cumulative_cubic_B_spline src/main.cpp src/utils.cpp src/ceres_solve.cpp src/data_structure.cpp)
-target_link_libraries(cumulative_cubic_B_spline ${catkin_LIBRARIES} ${CERES_LIBRARIES} dw)
-add_dependencies(cumulative_cubic_B_spline cumulative_cubic_B_spline_generate_messages_cpp)
+#add_executable(cumulative_cubic_B_spline src/main.cpp src/utils.cpp src/ceres_solve.cpp src/data_structure.cpp)
+#target_link_libraries(cumulative_cubic_B_spline ${catkin_LIBRARIES} ${CERES_LIBRARIES} dw)
+#add_dependencies(cumulative_cubic_B_spline cumulative_cubic_B_spline_generate_messages_cpp)
+
+add_executable(demo src/demo.cpp)
+target_link_libraries(demo ${catkin_LIBRARIES} ${OpenCV_LIBS} dw)
